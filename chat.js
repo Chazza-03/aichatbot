@@ -52,6 +52,51 @@ function cosineSimOptimized(a, b, bMagnitude) {
   return dot(a, b) / denom;
 }
 
+// Service detection function
+function detectService(question) {
+  const questionLower = question.toLowerCase();
+  
+  const serviceKeywords = {
+    'warehousing': ['warehous', 'storage', 'inventory', 'pick and pack', 'devanning', 'pallet', 'fifo'],
+    'shipping': ['shipping', 'ship', 'sea freight', 'air freight', 'global shipping', 'ocean freight'],
+    'customs': ['customs', 'brokerage', 'bonded', 'clearance', 'import', 'export'],
+    'freight': ['freight', 'road freight', 'transport', 'delivery', 'distribution', 'haulage', 'trucking'],
+    'accounts': ['account', 'billing', 'invoice', 'payment', 'credit', 'finance', 'statement']
+  };
+
+  for (const [service, keywords] of Object.entries(serviceKeywords)) {
+    if (keywords.some(keyword => questionLower.includes(keyword))) {
+      return service;
+    }
+  }
+  
+  return 'general';
+}
+
+// Enhanced contact mapping function
+function getServiceContactInfo(service, matches) {
+  // Look for service routing information in matches
+  const routingInfo = matches.find(m => 
+    m.item.metadata?.intent === 'contact_routing' &&
+    m.item.metadata?.service_mapping
+  );
+
+  if (routingInfo && routingInfo.item.metadata.service_mapping[service]) {
+    return routingInfo.item.metadata.service_mapping[service];
+  }
+
+  // Fallback: look for any contact info in matches
+  const contactInfo = matches.find(m => 
+    m.item.metadata?.category === "contact_information"
+  );
+
+  if (contactInfo) {
+    return `please call ${contactInfo.item.answer || 'our main number'}`;
+  }
+
+  return "please contact us at +44 (0)121 765 4166 or email info@jeavons.co.uk";
+}
+
 // Utility: get best matches (top K) - optimized
 function getTopKMatches(queryEmbedding, k = MAX_CONTEXT_ITEMS) {
   const queryMag = magnitude(queryEmbedding);
@@ -117,14 +162,19 @@ const SYSTEM_PROMPT = `
 You are a knowledgeable and concise customer support agent for Jeavons Eurotir Ltd.
 Use the provided context to answer questions accurately.
 
-SPECIAL INSTRUCTIONS:
-1. For service-specific inquiries (warehousing, shipping, customs, etc.), map to the correct contact from the context
-2. If information is incomplete, acknowledge what you can answer and suggest contacting for specifics
-3. For historical questions, be precise with dates and facts
-4. Always maintain a professional and helpful tone
-5. If unsure, provide general contact information but be transparent about limitations
+SPECIAL INSTRUCTIONS FOR CONTACT ROUTING:
+1. When users ask "who can I contact about X" or "who to speak to about Y":
+   - First answer their main question about the service
+   - THEN provide specific contact instructions using the service mapping from context
+   - Format: "For [service] inquiries, [specific contact instructions]"
 
-Do not hallucinate or invent information beyond what's in the context.
+2. Always include specific phone menu options when available (e.g., "press 3")
+
+3. If no specific routing exists, provide general contact info but be clear about it
+
+4. For service inquiries, be specific about what the service includes
+
+Do not hallucinate contact details or service information - use only what's in the context.
 `;
 
 // Express router
@@ -166,13 +216,12 @@ router.post('/', async (req, res) => {
     let contextText = buildContextText(topMatches, question);
 
     // Add fallback contact info if no good matches or for specific intents
-    if (topMatches.length === 0 || /contact|phone|email|reach/i.test(question)) {
+    if (topMatches.length === 0 || /contact|phone|email|reach|who.*call/i.test(question)) {
       const contactInfo = KB.find(item =>
-        item.metadata?.category === "contact_information" &&
-        item.metadata?.sub_category === "phone_menu"
+        item.metadata?.category === "contact_information"
       );
       if (contactInfo) {
-        contextText += `\n[contact_information / phone_menu] Q: ${contactInfo.Q}\nA: ${contactInfo.A}\n`;
+        contextText += `\n[contact_information] Q: ${contactInfo.Q || contactInfo.question}\nA: ${contactInfo.A || contactInfo.answer}\n`;
       }
     }
 
@@ -191,13 +240,26 @@ router.post('/', async (req, res) => {
 
     let answer = chatResp.choices?.[0]?.message?.content || "I apologize, but I couldn't generate a response at this time.";
 
+    // Detect if this is a contact routing question and enhance response
+    const isContactQuestion = /who (to )?(contact|speak to|call|email|reach).*(about|for)|contact.*about|who.*warehousing|who.*shipping/i.test(question);
+    
+    if (isContactQuestion) {
+      const detectedService = detectService(question);
+      const contactInstructions = getServiceContactInfo(detectedService, topMatches);
+      
+      // Enhance the answer with specific contact instructions if not already included
+      if (!answer.includes('press') && !answer.includes(contactInstructions)) {
+        answer += ` For ${detectedService} inquiries, ${contactInstructions}.`;
+      }
+    }
+
     // Smart fallback handling
     const shouldAddFallback = 
       topMatches.length === 0 || 
       topMatches[0].score < 0.5 ||
-      /don'?t know|unsure|not sure|no information|sorry/i.test(answer);
+      /don'?t know|unsure|not sure|no information|sorry|apologize/i.test(answer);
     
-    if (shouldAddFallback) {
+    if (shouldAddFallback && !answer.includes('+44') && !answer.includes('info@jeavons.co.uk')) {
       answer += ` For more specific information, please contact us at +44 (0)121 765 4166 or email info@jeavons.co.uk.`;
     }
 
@@ -205,11 +267,12 @@ router.post('/', async (req, res) => {
       answer,
       matches: topMatches.map(m => ({
         score: m.score,
-        Q: m.item.Q,
-        A: m.item.A,
+        Q: m.item.Q || m.item.question,
+        A: m.item.A || m.item.answer,
         metadata: m.item.metadata
       })),
-      context_used: contextText.length > 0
+      context_used: contextText.length > 0,
+      detected_service: isContactQuestion ? detectService(question) : null
     };
 
     // Cache successful responses
@@ -233,4 +296,3 @@ router.post('/', async (req, res) => {
 
 // Export the router
 module.exports = router;
-
