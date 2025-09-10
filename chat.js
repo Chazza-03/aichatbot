@@ -556,7 +556,27 @@ The context includes intent tags, priority levels, and relevant keywords to help
 
   buildUserPrompt(contextText, question) {
     const context = contextText || 'No specific context found for this question.';
-    return `Context:\n${context}\n\nUser question: ${question}\n\nPlease provide a helpful and accurate answer based on the available information. Pay attention to the intent tags, priority levels, and keywords in the context to better understand the type of information being requested.`;
+    return `Context:\n${context}\n\nUser question: ${question}\n\nPlease provide a helpful and accurate answer based on the available information. Pay attention to the intent tags, priority levels, and keywords in the context to better understand the type of information being requested. 
+
+IMPORTANT: Respond in plain text only. Do not use any markdown formatting, bullet points with special characters, or bold/italic text. Write in natural, conversational sentences and paragraphs.`;
+  }
+
+  // Clean up any markdown formatting artifacts
+  cleanupFormattingArtifacts(text) {
+    return text
+      // Remove markdown bold/italic
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/\*([^*]+)\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      .replace(/_([^_]+)_/g, '$1')
+      // Remove markdown headers
+      .replace(/^#{1,6}\s+(.+)$/gm, '$1')
+      // Replace bullet points with natural language
+      .replace(/^\s*[-*]\s*\*\*([^*]+)\*\*:\s*(.+)$/gm, '$1: $2')
+      .replace(/^\s*[-*]\s*(.+)$/gm, '$1')
+      // Clean up extra whitespace
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
 
   getStats() {
