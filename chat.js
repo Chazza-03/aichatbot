@@ -1,4 +1,3 @@
-// api/chat.js
 const fs = require('fs');
 const path = require('path');
 const OpenAI = require('openai');
@@ -10,8 +9,8 @@ const CHAT_MODEL = process.env.CHAT_MODEL || 'gpt-4o-mini';
 // Load OpenAI client
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Load KB into memory at startup
-const KB_PATH = path.join(process.cwd(), 'data', 'knowledge_embeddings.json');
+// Load KB into memory at startup - UPDATED PATH for root directory
+const KB_PATH = path.join(process.cwd(), 'knowledge_embeddings.json');
 let KB = [];
 try {
   const raw = fs.readFileSync(KB_PATH, 'utf8');
@@ -122,4 +121,5 @@ router.post('/', async (req, res) => {
   }
 });
 
+// Export the router
 module.exports = router;
