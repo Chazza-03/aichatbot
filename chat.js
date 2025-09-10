@@ -11,7 +11,9 @@ const CONFIG = {
   MAX_CONTEXT_ITEMS: Math.max(1, Math.min(20, parseInt(process.env.MAX_CONTEXT_ITEMS) || 6)),
   CACHE_TTL: 5 * 60 * 1000, // 5 minutes
   MAX_TOKENS: 600,
-  TEMPERATURE: 0.1
+  TEMPERATURE: 0.1,
+  KEYWORD_BOOST: 0.1, // Boost for keyword matches
+  INTENT_BOOST: 0.15  // Boost for intent matches
 };
 
 // Initialize OpenAI client
@@ -22,6 +24,8 @@ class KnowledgeBase {
   constructor() {
     this.items = [];
     this.magnitudes = [];
+    this.keywordIndex = new Map(); // keyword -> item indices
+    this.intentIndex = new Map();  // intent -> item indices
     this.isLoaded = false;
   }
 
@@ -32,14 +36,46 @@ class KnowledgeBase {
       this.magnitudes = this.items.map(item => 
         item.embedding ? this.calculateMagnitude(item.embedding) : 0
       );
+      this.buildMetadataIndexes();
       this.isLoaded = true;
       console.log(`✓ Loaded ${this.items.length} KB items from ${filePath}`);
+      console.log(`✓ Built indexes: ${this.keywordIndex.size} keywords, ${this.intentIndex.size} intents`);
     } catch (err) {
       console.warn(`⚠ Could not load knowledge base: ${err.message}`);
       this.items = [];
       this.magnitudes = [];
       this.isLoaded = false;
     }
+  }
+
+  buildMetadataIndexes() {
+    this.keywordIndex.clear();
+    this.intentIndex.clear();
+
+    this.items.forEach((item, index) => {
+      const metadata = item.metadata;
+      if (!metadata) return;
+
+      // Build keyword index
+      if (metadata.keywords && Array.isArray(metadata.keywords)) {
+        metadata.keywords.forEach(keyword => {
+          const normalizedKeyword = keyword.toLowerCase().trim();
+          if (!this.keywordIndex.has(normalizedKeyword)) {
+            this.keywordIndex.set(normalizedKeyword, []);
+          }
+          this.keywordIndex.get(normalizedKeyword).push(index);
+        });
+      }
+
+      // Build intent index
+      if (metadata.intent) {
+        const intent = metadata.intent.toLowerCase().trim();
+        if (!this.intentIndex.has(intent)) {
+          this.intentIndex.set(intent, []);
+        }
+        this.intentIndex.get(intent).push(index);
+      }
+    });
   }
 
   calculateMagnitude(vector) {
@@ -61,24 +97,127 @@ class KnowledgeBase {
     return this.dotProduct(queryVector, itemVector) / denominator;
   }
 
-  findTopMatches(queryEmbedding, k = CONFIG.MAX_CONTEXT_ITEMS) {
+  // Enhanced matching with metadata boosting
+  findTopMatches(queryEmbedding, query, k = CONFIG.MAX_CONTEXT_ITEMS) {
     if (!this.isLoaded) return [];
 
-    const scores = this.items.map((item, index) => ({
-      item,
-      score: item.embedding 
+    const queryWords = this.extractQueryWords(query);
+    const detectedIntent = this.detectIntent(query);
+
+    const scores = this.items.map((item, index) => {
+      let baseScore = item.embedding 
         ? this.cosineSimilarity(queryEmbedding, item.embedding, this.magnitudes[index])
-        : -1
-    }));
+        : -1;
+
+      if (baseScore <= 0) return { item, score: baseScore, boosts: {} };
+
+      const boosts = this.calculateBoosts(item, queryWords, detectedIntent, index);
+      const boostedScore = baseScore + boosts.total;
+
+      return {
+        item,
+        score: Math.min(1.0, boostedScore), // Cap at 1.0
+        baseScore,
+        boosts
+      };
+    });
 
     return scores
       .sort((a, b) => b.score - a.score)
       .slice(0, k)
       .filter(match => match.score > CONFIG.SIMILARITY_THRESHOLD);
   }
+
+  extractQueryWords(query) {
+    return query.toLowerCase()
+      .replace(/[^\w\s]/g, ' ')
+      .split(/\s+/)
+      .filter(word => word.length > 2);
+  }
+
+  detectIntent(query) {
+    const lowerQuery = query.toLowerCase();
+    
+    // Intent detection patterns
+    const intentPatterns = {
+      'billing_info': /\b(bill|billing|invoice|cost|price|fee|charge|payment)\b/i,
+      'contact_info': /\b(contact|phone|email|speak|call|reach|touch)\b/i,
+      'service_info': /\b(service|what|how|do you|can you|offer)\b/i,
+      'location_info': /\b(where|location|address|based|office)\b/i,
+      'hours_info': /\b(hours|open|closed|time|when)\b/i,
+      'shipping_info': /\b(ship|shipping|freight|delivery|transport)\b/i,
+      'storage_info': /\b(storage|warehouse|store|keep)\b/i,
+      'customs_info': /\b(customs|clearance|import|export|brokerage)\b/i
+    };
+
+    for (const [intent, pattern] of Object.entries(intentPatterns)) {
+      if (pattern.test(lowerQuery)) {
+        return intent;
+      }
+    }
+
+    return null;
+  }
+
+  calculateBoosts(item, queryWords, detectedIntent, itemIndex) {
+    const boosts = {
+      keyword: 0,
+      intent: 0,
+      priority: 0,
+      total: 0
+    };
+
+    const metadata = item.metadata;
+    if (!metadata) return boosts;
+
+    // Keyword matching boost
+    if (metadata.keywords && Array.isArray(metadata.keywords)) {
+      const matchingKeywords = metadata.keywords.filter(keyword =>
+        queryWords.some(word => 
+          word.includes(keyword.toLowerCase()) || 
+          keyword.toLowerCase().includes(word)
+        )
+      );
+      boosts.keyword = Math.min(0.3, matchingKeywords.length * CONFIG.KEYWORD_BOOST);
+    }
+
+    // Intent matching boost
+    if (detectedIntent && metadata.intent === detectedIntent) {
+      boosts.intent = CONFIG.INTENT_BOOST;
+    }
+
+    // Priority boost
+    const priorityWeights = { 'high': 0.1, 'medium': 0.05, 'low': 0.02 };
+    if (metadata.priority && priorityWeights[metadata.priority]) {
+      boosts.priority = priorityWeights[metadata.priority];
+    }
+
+    boosts.total = boosts.keyword + boosts.intent + boosts.priority;
+    return boosts;
+  }
+
+  // Get related questions based on metadata
+  getRelatedQuestions(itemIndex, maxRelated = 3) {
+    const item = this.items[itemIndex];
+    if (!item?.metadata?.related_questions) return [];
+
+    return item.metadata.related_questions
+      .slice(0, maxRelated)
+      .map(relatedIndex => {
+        if (relatedIndex < this.items.length) {
+          const relatedItem = this.items[relatedIndex];
+          return {
+            question: relatedItem.Q || relatedItem.question,
+            answer: relatedItem.A || relatedItem.answer
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
+  }
 }
 
-// Pattern matching utilities
+// Enhanced pattern matching utilities
 class PatternMatcher {
   static GREETING_PATTERNS = [
     /^(hi|hello|hey|howdy|greetings|good\s(morning|afternoon|evening)|yo|sup|what's up|hi there|hello there)\b/i,
@@ -88,23 +227,18 @@ class PatternMatcher {
     /^(goodbye|bye|see ya|see you|farewell|cheers)\b/i,
     /^how\s+are\s+you(\s+doing)?\??$/i,
     /^what's\s+up\??$/i,
-    /^how's\s+it\s+going\??$/i
+    /^how's\it\s+going\??$/i
   ];
 
   static CONTACT_PATTERNS = [
     /(who (to )?(contact|speak to|call|email|reach).*(about|for))/i,
     /(contact.*(details|info|information))/i,
     /(phone.*number)/i,
-    /(email.*address)/i
+    /(email.*address)/i,
+    /(who.*contact)/i,
+    /(speak.*to)/i,
+    /(get.*in.*touch)/i
   ];
-
-  static SERVICE_KEYWORDS = {
-    warehousing: ['warehous', 'storage', 'inventory', 'pick and pack', 'devanning', 'pallet', 'fifo'],
-    shipping: ['shipping', 'ship', 'sea freight', 'air freight', 'global shipping', 'ocean freight'],
-    customs: ['customs', 'brokerage', 'bonded', 'clearance', 'import', 'export'],
-    freight: ['freight', 'road freight', 'transport', 'delivery', 'distribution', 'haulage', 'trucking'],
-    accounts: ['account', 'billing', 'invoice', 'payment', 'credit', 'finance', 'statement']
-  };
 
   static isGreeting(message) {
     const trimmed = message.trim().toLowerCase();
@@ -114,21 +248,9 @@ class PatternMatcher {
   static isContactQuery(message) {
     return this.CONTACT_PATTERNS.some(pattern => pattern.test(message));
   }
-
-  static detectService(message) {
-    const lowerMessage = message.toLowerCase();
-    
-    for (const [service, keywords] of Object.entries(this.SERVICE_KEYWORDS)) {
-      if (keywords.some(keyword => lowerMessage.includes(keyword))) {
-        return service;
-      }
-    }
-    
-    return null;
-  }
 }
 
-// Response generators
+// Enhanced response generators
 class ResponseGenerator {
   static GREETING_RESPONSES = {
     morning: (match) => `${match}! How can I help you with Jeavons Eurotir services today?`,
@@ -171,18 +293,20 @@ class ResponseGenerator {
   }
 }
 
-// Context builder with smart prioritization
+// Enhanced context builder with metadata awareness
 class ContextBuilder {
   static PRIORITY_WEIGHTS = { high: 3, medium: 2, low: 1 };
 
-  static build(matches, userQuestion) {
-    if (!matches.length) return '';
+  static build(matches, userQuestion, knowledgeBase) {
+    if (!matches.length) return { contextText: '', relatedQuestions: [] };
 
     const seenIntents = new Set();
     const prioritized = this.prioritizeMatches(matches);
     let contextText = '';
+    let relatedQuestions = [];
 
-    for (const match of prioritized) {
+    for (let i = 0; i < prioritized.length; i++) {
+      const match = prioritized[i];
       const { item, score } = match;
       const metadata = item.metadata || {};
       
@@ -190,13 +314,21 @@ class ContextBuilder {
       if (seenIntents.has(metadata.intent) && score < 0.7) continue;
       seenIntents.add(metadata.intent);
 
-      contextText += this.formatMatch(item, metadata);
+      contextText += this.formatMatch(item, metadata, match.boosts);
+      
+      // Add related questions from the first high-scoring match
+      if (i === 0 && relatedQuestions.length === 0) {
+        const itemIndex = knowledgeBase.items.findIndex(kbItem => kbItem === item);
+        if (itemIndex !== -1) {
+          relatedQuestions = knowledgeBase.getRelatedQuestions(itemIndex);
+        }
+      }
       
       // Early exit for high-confidence matches
       if (score > 0.8 && contextText.length > 500) break;
     }
 
-    return contextText;
+    return { contextText, relatedQuestions };
   }
 
   static prioritizeMatches(matches) {
@@ -211,40 +343,31 @@ class ContextBuilder {
     });
   }
 
-  static formatMatch(item, metadata) {
-    const header = metadata.category 
-      ? `${metadata.category}${metadata.sub_category ? ' / ' + metadata.sub_category : ''}`
-      : '';
+  static formatMatch(item, metadata, boosts = {}) {
+    const intentTag = metadata.intent ? `[${metadata.intent.replace('_', ' ').toUpperCase()}]` : '';
+    const priorityTag = metadata.priority ? `(${metadata.priority})` : '';
+    const keywordTags = metadata.keywords ? `Keywords: ${metadata.keywords.join(', ')}` : '';
+    
     const question = item.Q || item.question || '';
     const answer = item.A || item.answer || item.text || '';
     
-    return `\n[${header}] Q: ${question}\nA: ${answer}\n`;
+    let formatted = `\n${intentTag}${priorityTag} Q: ${question}\nA: ${answer}`;
+    
+    if (keywordTags) {
+      formatted += `\n${keywordTags}`;
+    }
+    
+    if (metadata.context) {
+      formatted += `\nContext: ${metadata.context}`;
+    }
+    
+    formatted += '\n';
+    return formatted;
   }
 }
 
-// Contact information handler
+// Enhanced contact handler
 class ContactHandler {
-  static getServiceContact(service, matches) {
-    // Look for service-specific routing
-    const routingInfo = matches.find(m => 
-      m.item.metadata?.intent === 'contact_routing' &&
-      m.item.metadata?.service_mapping
-    );
-
-    if (routingInfo?.item.metadata.service_mapping[service]) {
-      return routingInfo.item.metadata.service_mapping[service];
-    }
-
-    // Fallback to general contact info
-    const contactInfo = matches.find(m => 
-      m.item.metadata?.category === "contact_information"
-    );
-
-    return contactInfo 
-      ? `please call ${contactInfo.item.answer || 'our main number'}`
-      : "please contact us at +44 (0)121 765 4166";
-  }
-
   static shouldIncludeContact(question, matches, answer) {
     if (PatternMatcher.isGreeting(question)) return false;
     
@@ -255,19 +378,26 @@ class ContactHandler {
   }
 
   static formatContactInfo(question, matches, answer) {
-    const detectedService = PatternMatcher.detectService(question);
-    const contactInstructions = this.getServiceContact(detectedService, matches);
-    
-    // Avoid duplicate contact info
-    if (answer.includes('+44') || answer.includes('sales@jeavons.co.uk') || answer.includes(contactInstructions)) {
-      return answer;
+    // Look for contact info in matches
+    const contactMatch = matches.find(m => 
+      m.item.metadata?.intent === 'contact_info' ||
+      m.item.metadata?.keywords?.includes('contact') ||
+      /contact|phone|email/i.test(m.item.Q || m.item.question || '')
+    );
+
+    if (contactMatch) {
+      const contactAnswer = contactMatch.item.A || contactMatch.item.answer || '';
+      if (!answer.includes(contactAnswer)) {
+        return `${answer}\n\n${contactAnswer}`;
+      }
     }
 
-    if (detectedService) {
-      return `${answer} For ${detectedService} inquiries, ${contactInstructions}.`;
-    } else {
-      return `${answer} For more information, please ask more questions!.`;
+    // Fallback to default contact
+    if (!answer.includes('+44') && !answer.includes('sales@jeavons.co.uk')) {
+      return `${answer} For more information, please contact us at +44 (0)121 765 4166.`;
     }
+
+    return answer;
   }
 }
 
@@ -314,12 +444,13 @@ class QueryCache {
   }
 }
 
-// Main chatbot class
+// Enhanced main chatbot class
 class ChatBot {
   constructor() {
     this.knowledgeBase = new KnowledgeBase();
     this.cache = new QueryCache();
     this.systemPrompt = this.buildSystemPrompt();
+    this.conversationHistory = new Map();
     
     // Load KB at startup
     this.knowledgeBase.load();
@@ -327,43 +458,30 @@ class ChatBot {
 
   buildSystemPrompt() {
     return `
-You are a knowledgeable and concise customer support agent for Jeavons Eurotir Ltd.
-Use the provided context to answer questions accurately.
+You are a knowledgeable and helpful customer support agent for Jeavons Eurotir Ltd.
+Use the provided context to answer questions accurately and professionally.
 
-GREETING HANDLING:
-- If the user just greets you, respond politely but don't provide contact details
-- Keep greeting responses brief and professional
-- Redirect to business purposes after acknowledging greetings
+RESPONSE GUIDELINES:
+- Always provide specific, actionable information when available in context
+- For contact inquiries, include specific contact details from the context
+- Use the metadata information (intent, keywords, context) to better understand the question type
+- Be concise but comprehensive in your responses
+- When context includes related information, feel free to mention it if relevant
 
-STRICT CONTACT ROUTING RULES:
-1. ONLY provide contact details when:
-   - The user explicitly asks for contact information (using words like "contact", "phone", "email", "call", "speak to someone")
-   - You cannot answer the question with the provided context
-   - The user specifically asks "who can I contact about X" or "who to speak to about Y"
-
-2. When providing contact details:
-   - First answer their main question completely
-   - THEN provide specific contact instructions using service mapping from context
-   - Format: "For [specific service] inquiries, [specific contact instructions]"
-
-3. DO NOT include contact details in general service descriptions or answers to factual questions.
-4. NEVER provide contact details in response to simple greetings
-
-5. If no specific routing exists, provide general contact info but be clear about it.
-
-Do not hallucinate contact details or service information - use only what's in the context.
+The context includes intent tags, priority levels, and relevant keywords to help you understand the nature of each piece of information.
     `.trim();
   }
 
-  async processQuery(question) {
+  async processQuery(question, sessionId = 'default') {
     // Handle greetings
     if (PatternMatcher.isGreeting(question)) {
       return {
         answer: ResponseGenerator.generateGreeting(question),
         matches: [],
         context_used: false,
-        detected_service: null,
-        is_greeting: true
+        detected_intent: null,
+        is_greeting: true,
+        related_questions: []
       };
     }
 
@@ -380,21 +498,11 @@ Do not hallucinate contact details or service information - use only what's in t
       });
       const queryEmbedding = embeddingResponse.data[0].embedding;
 
-      // Find matches
-      const matches = this.knowledgeBase.findTopMatches(queryEmbedding);
+      // Find matches with enhanced metadata-aware scoring
+      const matches = this.knowledgeBase.findTopMatches(queryEmbedding, question);
 
-      // Build context
-      let contextText = ContextBuilder.build(matches, question);
-
-      // Add contact info for explicit contact queries
-      if (PatternMatcher.isContactQuery(question)) {
-        const contactItem = this.knowledgeBase.items.find(item =>
-          item.metadata?.category === "contact_information"
-        );
-        if (contactItem) {
-          contextText += ContextBuilder.formatMatch(contactItem, contactItem.metadata || {});
-        }
-      }
+      // Build enhanced context
+      const { contextText, relatedQuestions } = ContextBuilder.build(matches, question, this.knowledgeBase);
 
       // Generate response
       const chatResponse = await openai.chat.completions.create({
@@ -410,24 +518,27 @@ Do not hallucinate contact details or service information - use only what's in t
       let answer = chatResponse.choices?.[0]?.message?.content || 
         "I apologize, but I couldn't generate a response at this time.";
 
-      // Add contact info if needed
+      // Enhanced contact handling
       if (ContactHandler.shouldIncludeContact(question, matches, answer)) {
         answer = ContactHandler.formatContactInfo(question, matches, answer);
       }
 
+      const detectedIntent = this.knowledgeBase.detectIntent(question);
+      
       const response = {
         answer,
         matches: matches.map(m => ({
           score: m.score,
+          base_score: m.baseScore,
+          boosts: m.boosts,
           Q: m.item.Q || m.item.question,
           A: m.item.A || m.item.answer,
           metadata: m.item.metadata
         })),
         context_used: contextText.length > 0,
-        detected_service: PatternMatcher.isContactQuery(question) 
-          ? PatternMatcher.detectService(question) 
-          : null,
-        is_greeting: false
+        detected_intent: detectedIntent,
+        is_greeting: false,
+        related_questions: relatedQuestions
       };
 
       // Cache successful responses
@@ -445,12 +556,14 @@ Do not hallucinate contact details or service information - use only what's in t
 
   buildUserPrompt(contextText, question) {
     const context = contextText || 'No specific context found for this question.';
-    return `Context:\n${context}\n\nUser question: ${question}\n\nPlease provide a helpful and accurate answer based on the available information.`;
+    return `Context:\n${context}\n\nUser question: ${question}\n\nPlease provide a helpful and accurate answer based on the available information. Pay attention to the intent tags, priority levels, and keywords in the context to better understand the type of information being requested.`;
   }
 
   getStats() {
     return {
       knowledgeBaseSize: this.knowledgeBase.items.length,
+      keywordIndexSize: this.knowledgeBase.keywordIndex.size,
+      intentIndexSize: this.knowledgeBase.intentIndex.size,
       cacheSize: this.cache.size(),
       isKBLoaded: this.knowledgeBase.isLoaded
     };
@@ -472,7 +585,7 @@ router.get('/health', (req, res) => {
 
 // Main chat endpoint
 router.post('/', async (req, res) => {
-  const { question } = req.body || {};
+  const { question, sessionId } = req.body || {};
   
   // Validation
   if (!question || typeof question !== 'string' || !question.trim()) {
@@ -482,7 +595,7 @@ router.post('/', async (req, res) => {
   }
 
   try {
-    const response = await chatBot.processQuery(question.trim());
+    const response = await chatBot.processQuery(question.trim(), sessionId || 'default');
     res.json(response);
   } catch (error) {
     console.error('Chat endpoint error:', error);
@@ -494,4 +607,3 @@ router.post('/', async (req, res) => {
 });
 
 module.exports = router;
-
