@@ -46,7 +46,7 @@ function getTopKMatches(queryEmbedding, k = 5) {
       score: item.embedding ? cosineSim(queryEmbedding, item.embedding) : -1
     };
   });
-  scored.sort((a,b) => b.score - a.score);
+  scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, k);
 }
 
@@ -80,10 +80,7 @@ router.post('/', async (req, res) => {
 
     // 3) Build context text
     let contextText = '';
-    if (topMatches.length === 0) {
-      contextText = ''; // no relevant context found
-    } else {
-      // Include metadata and short Q/A
+    if (topMatches.length > 0) {
       for (const m of topMatches) {
         const md = m.item.metadata || {};
         const header = (md.category ? `${md.category}${md.sub_category ? ' / ' + md.sub_category : ''}` : '');
@@ -93,8 +90,25 @@ router.post('/', async (req, res) => {
       }
     }
 
+    // Always include contact info from KB for reference
+    const contactInfo = KB.find(item =>
+      item.metadata?.category === "contact_information" &&
+      item.metadata?.sub_category === "phone_menu"
+    );
+
+    if (contactInfo) {
+      contextText += `\n[contact_information / phone_menu] Q: ${contactInfo.Q}\nA: ${contactInfo.A}\n`;
+    }
+
     // 4) Construct chat messages and call chat model
-    const systemPrompt = `You are a concise, factual customer support agent for Jeavons Eurotir Ltd. Use only the provided context where possible. If information is missing, say you don't have that information and offer next steps (contact support). Do not hallucinate dates or facts.`;
+    const systemPrompt = `
+You are a concise, factual customer support agent for Jeavons Eurotir Ltd.
+Use only the provided context where possible.
+If the user asks who to contact about a specific service (e.g. warehousing, shipping, accounts),
+map that service to the correct phone menu option or contact listed in the context.
+If information is missing, say you don't have that information and provide the fallback contact number/email.
+Do not hallucinate dates or facts.
+    `;
 
     const userPrompt = `Context:\n${contextText || '[no context found]'}\n\nUser question: ${question}\n\nAnswer the question based on the context. Keep the answer concise and helpful.`;
 
@@ -108,11 +122,22 @@ router.post('/', async (req, res) => {
       max_tokens: 800
     });
 
-    const answer = chatResp.choices?.[0]?.message?.content || "Sorry, I couldn't generate a response.";
+    let answer = chatResp.choices?.[0]?.message?.content || "Sorry, I couldn't generate a response.";
+
+    // Add fallback contact info if the bot says it doesn't know
+    const fallbackContact = "You can also reach us at +44 (0)121 789 8666 or email info@jeavons.co.uk.";
+    if (/don't have that information/i.test(answer) || /sorry/i.test(answer)) {
+      answer += " " + fallbackContact;
+    }
 
     res.status(200).json({
       answer,
-      matches: topMatches.map(m => ({ score: m.score, Q: m.item.Q, A: m.item.A, metadata: m.item.metadata }))
+      matches: topMatches.map(m => ({
+        score: m.score,
+        Q: m.item.Q,
+        A: m.item.A,
+        metadata: m.item.metadata
+      }))
     });
 
   } catch (err) {
