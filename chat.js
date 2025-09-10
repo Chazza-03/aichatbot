@@ -10,7 +10,7 @@ const CHAT_MODEL = process.env.CHAT_MODEL || 'gpt-4o-mini';
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // Load KB into memory at startup - UPDATED PATH for root directory
-const KB_PATH = path.join(process.cwd(), 'knowledge_embeddings.json');
+const KB_PATH = path.join(__dirname, 'knowledge_embeddings.json');
 let KB = [];
 try {
   const raw = fs.readFileSync(KB_PATH, 'utf8');
