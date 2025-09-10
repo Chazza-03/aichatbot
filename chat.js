@@ -259,14 +259,14 @@ class ContactHandler {
     const contactInstructions = this.getServiceContact(detectedService, matches);
     
     // Avoid duplicate contact info
-    if (answer.includes('+44') || answer.includes('info@jeavons.co.uk') || answer.includes(contactInstructions)) {
+    if (answer.includes('+44') || answer.includes('sales@jeavons.co.uk') || answer.includes(contactInstructions)) {
       return answer;
     }
 
     if (detectedService) {
       return `${answer} For ${detectedService} inquiries, ${contactInstructions}.`;
     } else {
-      return `${answer} For more information, please contact us at +44 (0)121 765 4166.`;
+      return `${answer} For more information, please ask more questions!.`;
     }
   }
 }
@@ -494,3 +494,4 @@ router.post('/', async (req, res) => {
 });
 
 module.exports = router;
+
