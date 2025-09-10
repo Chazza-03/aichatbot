@@ -556,9 +556,17 @@ The context includes intent tags, priority levels, and relevant keywords to help
 
   buildUserPrompt(contextText, question) {
     const context = contextText || 'No specific context found for this question.';
-    return `Context:\n${context}\n\nUser question: ${question}\n\nPlease provide a helpful and accurate answer based on the available information. Pay attention to the intent tags, priority levels, and keywords in the context to better understand the type of information being requested. 
+    const isContactQuery = PatternMatcher.isContactQuery(question);
+    
+    let prompt = `Context:\n${context}\n\nUser question: ${question}\n\nPlease provide a helpful and accurate answer based on the available information. Pay attention to the intent tags, priority levels, and keywords in the context to better understand the type of information being requested. 
 
 IMPORTANT: Respond in plain text only. Do not use any markdown formatting, bullet points with special characters, or bold/italic text. Write in natural, conversational sentences and paragraphs.`;
+
+    if (isContactQuery) {
+      prompt += `\n\nThis is a contact inquiry. Provide a concise, direct response with the most relevant contact information. Avoid repeating the same information multiple times. Keep the response under 100 words.`;
+    }
+
+    return prompt;
   }
 
   // Clean up any markdown formatting artifacts
