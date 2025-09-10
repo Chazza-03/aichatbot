@@ -94,7 +94,7 @@ function getServiceContactInfo(service, matches) {
     return `please call ${contactInfo.item.answer || 'our main number'}`;
   }
 
-  return "please contact us at +44 (0)121 765 4166 or email info@jeavons.co.uk";
+  return "please contact us at +44 (0)121 765 4166";
 }
 
 // Utility: get best matches (top K) - optimized
@@ -262,7 +262,7 @@ router.post('/', async (req, res) => {
         if (detectedService) {
           answer += ` For ${detectedService} inquiries, ${contactInstructions}.`;
         } else {
-          answer += ` For more information, please contact us at +44 (0)121 765 4166 or email info@jeavons.co.uk.`;
+          answer += ` For more information, please contact us at +44 (0)121 765 4166.`;
         }
       }
     }
@@ -300,3 +300,4 @@ router.post('/', async (req, res) => {
 
 // Export the router
 module.exports = router;
+
