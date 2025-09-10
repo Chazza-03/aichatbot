@@ -52,7 +52,7 @@ function cosineSimOptimized(a, b, bMagnitude) {
   return dot(a, b) / denom;
 }
 
-// Service detection function
+// More specific service detection function
 function detectService(question) {
   const questionLower = question.toLowerCase();
   
@@ -70,7 +70,7 @@ function detectService(question) {
     }
   }
   
-  return 'general';
+  return null; // Return null instead of 'general'
 }
 
 // Enhanced contact mapping function
@@ -157,22 +157,25 @@ function buildContextText(matches, userQuestion) {
   return contextText;
 }
 
-// Enhanced system prompt with better service mapping
+// Enhanced system prompt with stricter contact routing
 const SYSTEM_PROMPT = `
 You are a knowledgeable and concise customer support agent for Jeavons Eurotir Ltd.
 Use the provided context to answer questions accurately.
 
-SPECIAL INSTRUCTIONS FOR CONTACT ROUTING:
-1. When users ask "who can I contact about X" or "who to speak to about Y":
-   - First answer their main question about the service
-   - THEN provide specific contact instructions using the service mapping from context
-   - Format: "For [service] inquiries, [specific contact instructions]"
+STRICT CONTACT ROUTING RULES:
+1. ONLY provide contact details when:
+   - The user explicitly asks for contact information (using words like "contact", "phone", "email", "call", "speak to someone")
+   - You cannot answer the question with the provided context
+   - The user specifically asks "who can I contact about X" or "who to speak to about Y"
 
-2. Always include specific phone menu options when available (e.g., "press 3")
+2. When providing contact details:
+   - First answer their main question completely
+   - THEN provide specific contact instructions using service mapping from context
+   - Format: "For [specific service] inquiries, [specific contact instructions]"
 
-3. If no specific routing exists, provide general contact info but be clear about it
+3. DO NOT include contact details in general service descriptions or answers to factual questions.
 
-4. For service inquiries, be specific about what the service includes
+4. If no specific routing exists, provide general contact info but be clear about it.
 
 Do not hallucinate contact details or service information - use only what's in the context.
 `;
@@ -215,8 +218,11 @@ router.post('/', async (req, res) => {
     // 3) Build context text with smart prioritization
     let contextText = buildContextText(topMatches, question);
 
-    // Add fallback contact info if no good matches or for specific intents
-    if (topMatches.length === 0 || /contact|phone|email|reach|who.*call/i.test(question)) {
+    // 4) Check if this is explicitly a contact question
+    const isExplicitContactQuestion = /(who (to )?(contact|speak to|call|email|reach).*(about|for))|(contact.*(details|info|information))|(phone.*number)|(email.*address)/i.test(question);
+    
+    // Add contact info to context only if explicitly requested
+    if (isExplicitContactQuestion) {
       const contactInfo = KB.find(item =>
         item.metadata?.category === "contact_information"
       );
@@ -225,7 +231,7 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // 4) Construct chat messages
+    // 5) Construct chat messages
     const userPrompt = `Context:\n${contextText || 'No specific context found for this question.'}\n\nUser question: ${question}\n\nPlease provide a helpful and accurate answer based on the available information.`;
 
     const chatResp = await openai.chat.completions.create({
@@ -240,27 +246,25 @@ router.post('/', async (req, res) => {
 
     let answer = chatResp.choices?.[0]?.message?.content || "I apologize, but I couldn't generate a response at this time.";
 
-    // Detect if this is a contact routing question and enhance response
-    const isContactQuestion = /who (to )?(contact|speak to|call|email|reach).*(about|for)|contact.*about|who.*warehousing|who.*shipping/i.test(question);
+    // 6) Only add contact info for explicit contact questions or low-confidence answers
+    const shouldAddContactInfo = 
+      isExplicitContactQuestion || 
+      topMatches.length === 0 || 
+      topMatches[0].score < 0.3 || // Lower threshold for fallback
+      /don'?t know|unsure|not sure|no information|sorry|apologize/i.test(answer);
     
-    if (isContactQuestion) {
+    if (shouldAddContactInfo) {
       const detectedService = detectService(question);
       const contactInstructions = getServiceContactInfo(detectedService, topMatches);
       
-      // Enhance the answer with specific contact instructions if not already included
-      if (!answer.includes('press') && !answer.includes(contactInstructions)) {
-        answer += ` For ${detectedService} inquiries, ${contactInstructions}.`;
+      // Only add contact info if not already included
+      if (!answer.includes('+44') && !answer.includes('info@jeavons.co.uk') && !answer.includes(contactInstructions)) {
+        if (detectedService) {
+          answer += ` For ${detectedService} inquiries, ${contactInstructions}.`;
+        } else {
+          answer += ` For more information, please contact us at +44 (0)121 765 4166 or email info@jeavons.co.uk.`;
+        }
       }
-    }
-
-    // Smart fallback handling
-    const shouldAddFallback = 
-      topMatches.length === 0 || 
-      topMatches[0].score < 0.5 ||
-      /don'?t know|unsure|not sure|no information|sorry|apologize/i.test(answer);
-    
-    if (shouldAddFallback && !answer.includes('+44') && !answer.includes('info@jeavons.co.uk')) {
-      answer += ` For more specific information, please contact us at +44 (0)121 765 4166 or email info@jeavons.co.uk.`;
     }
 
     const response = {
@@ -272,7 +276,7 @@ router.post('/', async (req, res) => {
         metadata: m.item.metadata
       })),
       context_used: contextText.length > 0,
-      detected_service: isContactQuestion ? detectService(question) : null
+      detected_service: isExplicitContactQuestion ? detectService(question) : null
     };
 
     // Cache successful responses
