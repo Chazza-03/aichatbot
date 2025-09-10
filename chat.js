@@ -198,7 +198,7 @@ router.post('/', async (req, res) => {
       /don'?t know|unsure|not sure|no information|sorry/i.test(answer);
     
     if (shouldAddFallback) {
-      answer += ` For more specific information, please contact us at +44 (0)121 789 8666 or email info@jeavons.co.uk.`;
+      answer += ` For more specific information, please contact us at +44 (0)121 765 4166 or email info@jeavons.co.uk.`;
     }
 
     const response = {
@@ -226,10 +226,11 @@ router.post('/', async (req, res) => {
     console.error('Error /api/chat:', err);
     res.status(500).json({ 
       error: 'Internal server error', 
-      answer: "I'm experiencing technical difficulties. Please try again later or contact us directly at +44 (0)121 789 8666."
+      answer: "I'm experiencing technical difficulties. Please try again later or contact us directly at +44 (0)121 765 4166."
     });
   }
 });
 
 // Export the router
 module.exports = router;
+
