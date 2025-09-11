@@ -10,14 +10,13 @@ const { limiter, sanitizeInput, injectionGuard } = require('./securityMiddleware
 const CONFIG = {
   EMBEDDING_MODEL: process.env.EMBEDDING_MODEL || 'text-embedding-3-small',
   CHAT_MODEL: process.env.CHAT_MODEL || 'gpt-4o-mini',
-  SIMILARITY_THRESHOLD: Math.max(0.1, Math.min(1.0, parseFloat(process.env.SIMILARITY_THRESHOLD) || 0.3)), // Lowered to 0.3 for better matching on synonyms and gists
-  MAX_CONTEXT_ITEMS: Math.max(1, Math.min(20, parseInt(process.env.MAX_CONTEXT_ITEMS) || 12)), // Increased to 12 for even better handling of multi-part and related questions
+  SIMILARITY_THRESHOLD: Math.max(0.1, Math.min(1.0, parseFloat(process.env.SIMILARITY_THRESHOLD) || 0.4)),
+  MAX_CONTEXT_ITEMS: Math.max(1, Math.min(20, parseInt(process.env.MAX_CONTEXT_ITEMS) || 6)),
   CACHE_TTL: 5 * 60 * 1000, // 5 minutes
   MAX_TOKENS: 600,
   TEMPERATURE: 0.1,
   KEYWORD_BOOST: 0.1,
-  INTENT_BOOST: 0.15,
-  MAX_HISTORY_MESSAGES: 20 // Limit conversation history to last 10 turns (20 messages)
+  INTENT_BOOST: 0.15
 };
 
 // Initialize OpenAI client
@@ -31,24 +30,6 @@ class KnowledgeBase {
     this.keywordIndex = new Map();
     this.intentIndex = new Map();
     this.isLoaded = false;
-    // Synonym map for expanding query words to improve gist/synonym understanding (expanded with more terms from KB)
-    this.synonymMap = new Map([
-      ['background', ['history', 'origin', 'founded', 'established', 'started', 'created', 'since when']],
-      ['origin', ['history', 'background', 'founded', 'established', 'created']],
-      ['founded', ['established', 'started', 'origin', 'history', 'created', 'background']],
-      ['history', ['background', 'origin', 'founded', 'established']],
-      ['payment', ['billing', 'terms', 'invoice', 'cost', 'price', 'fee', 'charge', 'conditions', 'pay']],
-      ['terms', ['payment', 'conditions', 'billing', 'invoice']],
-      ['options', ['methods', 'ways', 'alternatives', 'modes']],
-      ['documents', ['paperwork', 'forms', 'requirements', 'cmr', 'note']],
-      ['services', ['offerings', 'capabilities', 'what do you do', 'logistics', 'shipping', 'freight', 'warehousing', 'customs']],
-      ['ship', ['transport', 'deliver', 'freight', 'send', 'shipment']],
-      ['contact', ['phone', 'email', 'reach', 'touch', 'get in touch', 'who to call']],
-      ['quote', ['price', 'cost', 'estimate', 'how much']],
-      ['insurance', ['coverage', 'protect', 'claims', 'damaged']],
-      ['prohibited', ['excluded', 'cannot ship', 'restricted', 'not allowed']],
-      // Add more as needed based on common KB queries
-    ]);
   }
 
   load(filePath = path.join(__dirname, 'knowledge_embeddings.json')) {
@@ -151,46 +132,25 @@ class KnowledgeBase {
   }
 
   extractQueryWords(query) {
-    const baseWords = query.toLowerCase()
+    return query.toLowerCase()
       .replace(/[^\w\s]/g, ' ')
       .split(/\s+/)
       .filter(word => word.length > 2);
-
-    const expanded = new Set(baseWords);
-    for (const word of baseWords) {
-      if (this.synonymMap.has(word)) {
-        this.synonymMap.get(word).forEach(syn => expanded.add(syn));
-      }
-    }
-    return Array.from(expanded);
   }
 
   detectIntent(query) {
     const lowerQuery = query.toLowerCase();
 
-    // Intent detection patterns (enhanced with more synonyms and new intents from KB)
+    // Intent detection patterns
     const intentPatterns = {
-      'company_history': /\b(history|background|origin|founded|established|started|how long|years|business|experience|since when)\b/i,
-      'billing_info': /\b(bill|billing|invoice|cost|price|fee|charge|payment|terms|conditions|pay)\b/i,
-      'contact_info': /\b(contact|phone|email|speak|call|reach|touch|get in touch|who to call|department|extension|menu)\b/i,
-      'service_info': /\b(service|what|how|do you|can you|offer|main|offerings|capabilities|what do you do|logistics)\b/i,
+      'billing_info': /\b(bill|billing|invoice|cost|price|fee|charge|payment)\b/i,
+      'contact_info': /\b(contact|phone|email|speak|call|reach|touch)\b/i,
+      'service_info': /\b(service|what|how|do you|can you|offer)\b/i,
       'location_info': /\b(where|location|address|based|office)\b/i,
-      'hours_info': /\b(hours|open|closed|time|when|operating|cut off|deadlines)\b/i,
-      'shipping_info': /\b(ship|shipping|freight|delivery|transport|options|methods|lcl|fcl|sea|road|pallets|germany|italy|cyprus|air|rail|expedited|express|urgent|prohibited|excluded|hazardous|adr|high value)\b/i,
-      'storage_info': /\b(storage|warehouse|store|keep|bonded|security|value added|devanning|pick and pack|inventory|max weight|duration)\b/i,
-      'customs_info': /\b(customs|clearance|import|export|brokerage|broker|documents|paperwork|cmr|incoterms|cfsp|procedures|declarations)\b/i,
-      'insurance_info': /\b(insurance|coverage|claims|damaged|protect|git|giw)\b/i,
-      'job_application': /\b(jobs|careers|hiring|apply|employment|vacancies|work for us|join us|recruitment|opportunities)\b/i,
-      'company_credentials': /\b(accreditations|certifications|memberships|standards|quality|aeo|aeof|aeoc|aeos|rha|bifa|fors)\b/i,
-      'company_leadership': /\b(who owns|management|ceo|directors|leadership|team)\b/i,
-      'company_usp': /\b(different|unique|why choose|usp|family|personalised|reliable)\b/i,
-      'technology_stack': /\b(technology|tracking|systems|visibility|portal|online|manage|bookings)\b/i,
-      'payment_info': /\b(payment types|bank transfer|credit card|fee|commission|how to pay)\b/i,
-      'new_business_policy': /\b(minimum volume|requirement|new customers|small shipments)\b/i,
-      'contingency_planning': /\b(contingency plans|disruptions|strikes|weather|congestion|alternative routing)\b/i,
-      'problem_resolution': /\b(problem|resolution|process|delays|customs holds|issues|proactive|notifications)\b/i,
-      'support_availability': /\b(after hours|emergency|support|outside office hours|contract|negotiated)\b/i,
-      'specialised_services': /\b(temperature controlled|refrigerated|reefer|cold chain|packing|crating|palletizing|fragile)\b/i
+      'hours_info': /\b(hours|open|closed|time|when)\b/i,
+      'shipping_info': /\b(ship|shipping|freight|delivery|transport)\b/i,
+      'storage_info': /\b(storage|warehouse|store|keep)\b/i,
+      'customs_info': /\b(customs|clearance|import|export|brokerage)\b/i
     };
 
     for (const [intent, pattern] of Object.entries(intentPatterns)) {
@@ -213,7 +173,7 @@ class KnowledgeBase {
     const metadata = item.metadata;
     if (!metadata) return boosts;
 
-    // Keyword matching boost (now benefits from synonym expansion)
+    // Keyword matching boost
     if (metadata.keywords && Array.isArray(metadata.keywords)) {
       const matchingKeywords = metadata.keywords.filter(keyword =>
         queryWords.some(word =>
@@ -347,7 +307,6 @@ class ContextBuilder {
     const prioritized = this.prioritizeMatches(matches);
     let contextText = '';
     let relatedQuestions = [];
-    const seenRelated = new Set();
 
     for (let i = 0; i < prioritized.length; i++) {
       const match = prioritized[i];
@@ -360,18 +319,11 @@ class ContextBuilder {
 
       contextText += this.formatMatch(item, metadata, match.boosts);
 
-      // Add related questions from top 3 high-scoring matches, avoiding duplicates
-      if (i < 3 && relatedQuestions.length < 9) { // Limit total related to 9
+      // Add related questions from the first high-scoring match
+      if (i === 0 && relatedQuestions.length === 0) {
         const itemIndex = knowledgeBase.items.findIndex(kbItem => kbItem === item);
         if (itemIndex !== -1) {
-          const rel = knowledgeBase.getRelatedQuestions(itemIndex);
-          for (const r of rel) {
-            const key = r.question;
-            if (!seenRelated.has(key)) {
-              seenRelated.add(key);
-              relatedQuestions.push(r);
-            }
-          }
+          relatedQuestions = knowledgeBase.getRelatedQuestions(itemIndex);
         }
       }
 
@@ -516,27 +468,21 @@ You are an official AI assistant for Jeavons Eurotir Ltd., a family-owned logist
 1.  **FIRST PERSON:** Always refer to the company as "we", "us", or "our". NEVER use third-person like "Jeavons Eurotir offers..." or "They offer...". Example: "We offer global shipping services" NOT "Jeavons Eurotir offers global shipping."
 2.  **STRICT CONTEXT USE:** Your knowledge is STRICTLY LIMITED to the context provided below. If the answer is not found in the context, you MUST say so. DO NOT HALLUCINATE or make up information.
 3.  **NO KNOWLEDGE RESPONSE:** If you lack information, say: "I don't have that specific information on hand," or "I'm not sure about that detail," and guide them to contact the team.
-4.  **FORMATTING:** Respond in clear, plain text. Use natural paragraphs. You may use bullet points or numbered lists if it improves clarity for complex or multi-part questions.
+4.  **FORMATTING:** Respond in clear, plain text. Use natural paragraphs. Do NOT use markdown, bullet points (*, -), or numbered lists.
 
 # CONTEXT TO USE:
 {context}
 
 # FINAL INSTRUCTION
-Answer the user's question based SOLELY on the context above. Speak as a representative of Jeavons Eurotir. For multi-part questions, address each part clearly. For follow-up questions, refer to previous context if relevant.
+Answer the user's question based SOLELY on the context above. Speak as a representative of Jeavons Eurotir.
     `.trim();
   }
 
   async processQuery(question, sessionId = 'default') {
-    let history = this.conversationHistory.get(sessionId) || [];
-
     // Handle greetings
     if (PatternMatcher.isGreeting(question)) {
-      const answer = ResponseGenerator.generateGreeting(question);
-      history.push({ role: 'user', content: question }, { role: 'assistant', content: answer });
-      this.conversationHistory.set(sessionId, history.slice(-CONFIG.MAX_HISTORY_MESSAGES));
-
       return {
-        answer,
+        answer: ResponseGenerator.generateGreeting(question),
         matches: [],
         context_used: false,
         detected_intent: null,
@@ -545,23 +491,16 @@ Answer the user's question based SOLELY on the context above. Speak as a represe
       };
     }
 
-    // Check cache (but skip if history exists, as context may change response)
+    // Check cache
     const cacheKey = question.toLowerCase().trim();
-    const cached = history.length === 0 ? this.cache.get(cacheKey) : null;
+    const cached = this.cache.get(cacheKey);
     if (cached) return cached;
 
     try {
-      // Enhance embedding input with recent history for better follow-up relevance
-      let embeddingInput = question;
-      if (history.length > 0) {
-        const recentHistory = history.slice(-4).map(m => m.content).join('\n'); // Last 2 turns
-        embeddingInput = recentHistory + '\n' + question;
-      }
-
       // Generate embedding
       const embeddingResponse = await openai.embeddings.create({
         model: CONFIG.EMBEDDING_MODEL,
-        input: embeddingInput
+        input: question
       });
       const queryEmbedding = embeddingResponse.data[0].embedding;
 
@@ -581,21 +520,16 @@ Answer the user's question based SOLELY on the context above. Speak as a represe
           is_greeting: false,
           related_questions: []
         };
-        history.push({ role: 'user', content: question }, { role: 'assistant', content: noContextResponse.answer });
-        this.conversationHistory.set(sessionId, history.slice(-CONFIG.MAX_HISTORY_MESSAGES));
         return noContextResponse;
       }
 
-      // Generate response with history for better follow-up handling
-      const messages = [
-        { role: 'system', content: this.systemPrompt.replace('{context}', contextText) },
-        ...history,
-        { role: 'user', content: question }
-      ];
-
+      // Generate response
       const chatResponse = await openai.chat.completions.create({
         model: CONFIG.CHAT_MODEL,
-        messages,
+        messages: [
+          { role: 'system', content: this.systemPrompt.replace('{context}', contextText) }, // *** Inject context into prompt
+          { role: 'user', content: question } // *** Simplified user prompt
+        ],
         temperature: CONFIG.TEMPERATURE,
         max_tokens: CONFIG.MAX_TOKENS
       });
@@ -629,12 +563,8 @@ Answer the user's question based SOLELY on the context above. Speak as a represe
         related_questions: relatedQuestions
       };
 
-      // Update history
-      history.push({ role: 'user', content: question }, { role: 'assistant', content: answer });
-      this.conversationHistory.set(sessionId, history.slice(-CONFIG.MAX_HISTORY_MESSAGES));
-
-      // Cache successful responses only if no history was used (to avoid context-specific caching)
-      if (matches.length > 0 && history.length === 0) {
+      // Cache successful responses
+      if (matches.length > 0) {
         this.cache.set(cacheKey, response);
       }
 
@@ -657,6 +587,8 @@ Answer the user's question based SOLELY on the context above. Speak as a represe
       .replace(/_([^_]+)_/g, '$1')
       // Remove markdown headers
       .replace(/^#{1,6}\s+(.+)$/gm, '$1')
+      // Replace bullet points with natural language
+      .replace(/^\s*[-*•]\s+/gm, '') // Remove bullet characters
       // Clean up extra whitespace
       .replace(/\n{3,}/g, '\n\n')
       .trim();
@@ -709,3 +641,4 @@ router.post(
 );
 
 module.exports = router;
+
