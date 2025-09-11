@@ -11,9 +11,9 @@ const CONFIG = {
   MAX_CONTEXT_ITEMS: Math.max(1, Math.min(20, parseInt(process.env.MAX_CONTEXT_ITEMS) || 6)),
   CACHE_TTL: 5 * 60 * 1000, // 5 minutes
   MAX_TOKENS: 600,
-  TEMPERATURE: 0.1,
-  KEYWORD_BOOST: 0.1, // Boost for keyword matches
-  INTENT_BOOST: 0.15  // Boost for intent matches
+  TEMPERATURE: 0.1, // Low temperature for factual accuracy
+  KEYWORD_BOOST: 0.1,
+  INTENT_BOOST: 0.15
 };
 
 // Initialize OpenAI client
@@ -24,8 +24,8 @@ class KnowledgeBase {
   constructor() {
     this.items = [];
     this.magnitudes = [];
-    this.keywordIndex = new Map(); // keyword -> item indices
-    this.intentIndex = new Map();  // intent -> item indices
+    this.keywordIndex = new Map();
+    this.intentIndex = new Map();
     this.isLoaded = false;
   }
 
@@ -33,7 +33,7 @@ class KnowledgeBase {
     try {
       const raw = fs.readFileSync(filePath, 'utf8');
       this.items = JSON.parse(raw);
-      this.magnitudes = this.items.map(item => 
+      this.magnitudes = this.items.map(item =>
         item.embedding ? this.calculateMagnitude(item.embedding) : 0
       );
       this.buildMetadataIndexes();
@@ -90,10 +90,10 @@ class KnowledgeBase {
     if (!queryVector || !itemVector || queryVector.length !== itemVector.length) {
       return -1;
     }
-    
+
     const queryMagnitude = this.calculateMagnitude(queryVector);
     const denominator = (queryMagnitude * itemMagnitude) || 1e-10;
-    
+
     return this.dotProduct(queryVector, itemVector) / denominator;
   }
 
@@ -105,7 +105,7 @@ class KnowledgeBase {
     const detectedIntent = this.detectIntent(query);
 
     const scores = this.items.map((item, index) => {
-      let baseScore = item.embedding 
+      let baseScore = item.embedding
         ? this.cosineSimilarity(queryEmbedding, item.embedding, this.magnitudes[index])
         : -1;
 
@@ -116,7 +116,7 @@ class KnowledgeBase {
 
       return {
         item,
-        score: Math.min(1.0, boostedScore), // Cap at 1.0
+        score: Math.min(1.0, boostedScore),
         baseScore,
         boosts
       };
@@ -137,7 +137,7 @@ class KnowledgeBase {
 
   detectIntent(query) {
     const lowerQuery = query.toLowerCase();
-    
+
     // Intent detection patterns
     const intentPatterns = {
       'billing_info': /\b(bill|billing|invoice|cost|price|fee|charge|payment)\b/i,
@@ -173,8 +173,8 @@ class KnowledgeBase {
     // Keyword matching boost
     if (metadata.keywords && Array.isArray(metadata.keywords)) {
       const matchingKeywords = metadata.keywords.filter(keyword =>
-        queryWords.some(word => 
-          word.includes(keyword.toLowerCase()) || 
+        queryWords.some(word =>
+          word.includes(keyword.toLowerCase()) ||
           keyword.toLowerCase().includes(word)
         )
       );
@@ -267,26 +267,26 @@ class ResponseGenerator {
 
   static generateGreeting(message) {
     const lower = message.toLowerCase().trim();
-    
+
     // Time-specific greetings
     const timeMatch = lower.match(/good\s(morning|afternoon|evening)/i);
     if (timeMatch) return this.GREETING_RESPONSES.morning(timeMatch[0]);
-    
+
     // Thank you responses
     if (/^(thanks?|thank\s+(you|u))/i.test(lower)) {
       return this.GREETING_RESPONSES.thanks();
     }
-    
+
     // Goodbye responses
     if (/^(goodbye|bye|see ya|see you|farewell)/i.test(lower)) {
       return this.GREETING_RESPONSES.goodbye();
     }
-    
+
     // How are you responses
     if (/how\s+(are\s+you|are\s+things|is\s+it\s+going)/i.test(lower)) {
       return this.GREETING_RESPONSES.howAreYou();
     }
-    
+
     // Random default greeting
     const defaults = this.GREETING_RESPONSES.default;
     return defaults[Math.floor(Math.random() * defaults.length)];
@@ -309,13 +309,13 @@ class ContextBuilder {
       const match = prioritized[i];
       const { item, score } = match;
       const metadata = item.metadata || {};
-      
+
       // Avoid duplicate intents unless high confidence
       if (seenIntents.has(metadata.intent) && score < 0.7) continue;
       seenIntents.add(metadata.intent);
 
       contextText += this.formatMatch(item, metadata, match.boosts);
-      
+
       // Add related questions from the first high-scoring match
       if (i === 0 && relatedQuestions.length === 0) {
         const itemIndex = knowledgeBase.items.findIndex(kbItem => kbItem === item);
@@ -323,7 +323,7 @@ class ContextBuilder {
           relatedQuestions = knowledgeBase.getRelatedQuestions(itemIndex);
         }
       }
-      
+
       // Early exit for high-confidence matches
       if (score > 0.8 && contextText.length > 500) break;
     }
@@ -335,7 +335,7 @@ class ContextBuilder {
     return matches.sort((a, b) => {
       // Primary: by score
       if (b.score !== a.score) return b.score - a.score;
-      
+
       // Secondary: by priority
       const aPriority = this.PRIORITY_WEIGHTS[a.item.metadata?.priority] || 1;
       const bPriority = this.PRIORITY_WEIGHTS[b.item.metadata?.priority] || 1;
@@ -347,20 +347,20 @@ class ContextBuilder {
     const intentTag = metadata.intent ? `[${metadata.intent.replace('_', ' ').toUpperCase()}]` : '';
     const priorityTag = metadata.priority ? `(${metadata.priority})` : '';
     const keywordTags = metadata.keywords ? `Keywords: ${metadata.keywords.join(', ')}` : '';
-    
+
     const question = item.Q || item.question || '';
     const answer = item.A || item.answer || item.text || '';
-    
+
     let formatted = `\n${intentTag}${priorityTag} Q: ${question}\nA: ${answer}`;
-    
+
     if (keywordTags) {
       formatted += `\n${keywordTags}`;
     }
-    
+
     if (metadata.context) {
       formatted += `\nContext: ${metadata.context}`;
     }
-    
+
     formatted += '\n';
     return formatted;
   }
@@ -370,16 +370,16 @@ class ContextBuilder {
 class ContactHandler {
   static shouldIncludeContact(question, matches, answer) {
     if (PatternMatcher.isGreeting(question)) return false;
-    
+
     return PatternMatcher.isContactQuery(question) ||
-           matches.length === 0 ||
-           matches[0]?.score < 0.3 ||
-           /don'?t know|unsure|not sure|no information|sorry|apologize/i.test(answer);
+      matches.length === 0 ||
+      matches[0]?.score < 0.3 ||
+      /don'?t know|unsure|not sure|no information|sorry|apologize/i.test(answer);
   }
 
   static formatContactInfo(question, matches, answer) {
     // Look for contact info in matches
-    const contactMatch = matches.find(m => 
+    const contactMatch = matches.find(m =>
       m.item.metadata?.intent === 'contact_info' ||
       m.item.metadata?.keywords?.includes('contact') ||
       /contact|phone|email/i.test(m.item.Q || m.item.question || '')
@@ -393,7 +393,7 @@ class ContactHandler {
     }
 
     // Fallback to default contact
-    if (!answer.includes('+44') && !answer.includes('sales@jeavons.co.uk')) {
+    if (!answer.includes('+44') && !answer.includes('sales@jeavonseurotir.co.uk')) {
       return `${answer} For more information, please contact us at +44 (0)121 765 4166.`;
     }
 
@@ -406,7 +406,7 @@ class QueryCache {
   constructor(ttl = CONFIG.CACHE_TTL) {
     this.cache = new Map();
     this.ttl = ttl;
-    
+
     // Cleanup expired entries every 10 minutes
     setInterval(() => this.cleanup(), 10 * 60 * 1000);
   }
@@ -414,12 +414,12 @@ class QueryCache {
   get(key) {
     const entry = this.cache.get(key);
     if (!entry) return null;
-    
+
     if (Date.now() - entry.timestamp > this.ttl) {
       this.cache.delete(key);
       return null;
     }
-    
+
     return entry.data;
   }
 
@@ -449,26 +449,29 @@ class ChatBot {
   constructor() {
     this.knowledgeBase = new KnowledgeBase();
     this.cache = new QueryCache();
-    this.systemPrompt = this.buildSystemPrompt();
+    this.systemPrompt = this.buildSystemPrompt(); // *** UPDATED PROMPT
     this.conversationHistory = new Map();
-    
+
     // Load KB at startup
     this.knowledgeBase.load();
   }
 
   buildSystemPrompt() {
     return `
-You are a knowledgeable and helpful customer support agent for Jeavons Eurotir Ltd.
-Use the provided context to answer questions accurately and professionally.
+# ROLE & PERSONA
+You are an official AI assistant for Jeavons Eurotir Ltd., a family-owned logistics company. You speak on behalf of the company. You are helpful, professional, and proud of the company's 46 years of experience.
 
-RESPONSE GUIDELINES:
-- Always provide specific, actionable information when available in context
-- For contact inquiries, include specific contact details from the context
-- Use the metadata information (intent, keywords, context) to better understand the question type
-- Be concise but comprehensive in your responses
-- When context includes related information, feel free to mention it if relevant
+# CORE DIRECTIVES
+1.  **FIRST PERSON:** Always refer to the company as "we", "us", or "our". NEVER use third-person like "Jeavons Eurotir offers..." or "They offer...". Example: "We offer global shipping services" NOT "Jeavons Eurotir offers global shipping."
+2.  **STRICT CONTEXT USE:** Your knowledge is STRICTLY LIMITED to the context provided below. If the answer is not found in the context, you MUST say so. DO NOT HALLUCINATE or make up information.
+3.  **NO KNOWLEDGE RESPONSE:** If you lack information, say: "I don't have that specific information on hand," or "I'm not sure about that detail," and guide them to contact the team.
+4.  **FORMATTING:** Respond in clear, plain text. Use natural paragraphs. Do NOT use markdown, bullet points (*, -), or numbered lists.
 
-The context includes intent tags, priority levels, and relevant keywords to help you understand the nature of each piece of information.
+# CONTEXT TO USE:
+{context}
+
+# FINAL INSTRUCTION
+Answer the user's question based SOLELY on the context above. Speak as a representative of Jeavons Eurotir.
     `.trim();
   }
 
@@ -504,19 +507,35 @@ The context includes intent tags, priority levels, and relevant keywords to help
       // Build enhanced context
       const { contextText, relatedQuestions } = ContextBuilder.build(matches, question, this.knowledgeBase);
 
+      // *** CRITICAL: If no context is found, build a specific response to avoid hallucination.
+      if (contextText.length === 0) {
+        const noContextResponse = {
+          answer: "I don't have specific information about that in my knowledge base. For detailed or specialized inquiries, please contact our team directly at +44 (0)121 765 4166 or sales@jeavonseurotir.co.uk. They'll be happy to assist you.",
+          matches: [],
+          context_used: false,
+          detected_intent: this.knowledgeBase.detectIntent(question),
+          is_greeting: false,
+          related_questions: []
+        };
+        return noContextResponse;
+      }
+
       // Generate response
       const chatResponse = await openai.chat.completions.create({
         model: CONFIG.CHAT_MODEL,
         messages: [
-          { role: 'system', content: this.systemPrompt },
-          { role: 'user', content: this.buildUserPrompt(contextText, question) }
+          { role: 'system', content: this.systemPrompt.replace('{context}', contextText) }, // *** Inject context into prompt
+          { role: 'user', content: question } // *** Simplified user prompt
         ],
         temperature: CONFIG.TEMPERATURE,
         max_tokens: CONFIG.MAX_TOKENS
       });
 
-      let answer = chatResponse.choices?.[0]?.message?.content || 
+      let answer = chatResponse.choices?.[0]?.message?.content ||
         "I apologize, but I couldn't generate a response at this time.";
+
+      // Clean the answer
+      answer = this.cleanupFormattingArtifacts(answer);
 
       // Enhanced contact handling
       if (ContactHandler.shouldIncludeContact(question, matches, answer)) {
@@ -524,7 +543,7 @@ The context includes intent tags, priority levels, and relevant keywords to help
       }
 
       const detectedIntent = this.knowledgeBase.detectIntent(question);
-      
+
       const response = {
         answer,
         matches: matches.map(m => ({
@@ -554,20 +573,7 @@ The context includes intent tags, priority levels, and relevant keywords to help
     }
   }
 
-  buildUserPrompt(contextText, question) {
-    const context = contextText || 'No specific context found for this question.';
-    const isContactQuery = PatternMatcher.isContactQuery(question);
-    
-    let prompt = `Context:\n${context}\n\nUser question: ${question}\n\nPlease provide a helpful and accurate answer based on the available information. Pay attention to the intent tags, priority levels, and keywords in the context to better understand the type of information being requested. 
-
-IMPORTANT: Respond in plain text only. Do not use any markdown formatting, bullet points with special characters, or bold/italic text. Write in natural, conversational sentences and paragraphs.`;
-
-    if (isContactQuery) {
-      prompt += `\n\nThis is a contact inquiry. Provide a concise, direct response with the most relevant contact information. Avoid repeating the same information multiple times. Keep the response under 100 words.`;
-    }
-
-    return prompt;
-  }
+  // *** REMOVED the old buildUserPrompt function as the prompt is now handled in the system message.
 
   // Clean up any markdown formatting artifacts
   cleanupFormattingArtifacts(text) {
@@ -580,8 +586,7 @@ IMPORTANT: Respond in plain text only. Do not use any markdown formatting, bulle
       // Remove markdown headers
       .replace(/^#{1,6}\s+(.+)$/gm, '$1')
       // Replace bullet points with natural language
-      .replace(/^\s*[-*]\s*\*\*([^*]+)\*\*:\s*(.+)$/gm, '$1: $2')
-      .replace(/^\s*[-*]\s*(.+)$/gm, '$1')
+      .replace(/^\s*[-*•]\s+/gm, '') // Remove bullet characters
       // Clean up extra whitespace
       .replace(/\n{3,}/g, '\n\n')
       .trim();
@@ -604,8 +609,8 @@ const chatBot = new ChatBot();
 
 // Health check endpoint
 router.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     ...chatBot.getStats(),
     timestamp: new Date().toISOString()
   });
@@ -614,11 +619,11 @@ router.get('/health', (req, res) => {
 // Main chat endpoint
 router.post('/', async (req, res) => {
   const { question, sessionId } = req.body || {};
-  
+
   // Validation
   if (!question || typeof question !== 'string' || !question.trim()) {
-    return res.status(400).json({ 
-      error: 'Please provide a valid question in the POST body.' 
+    return res.status(400).json({
+      error: 'Please provide a valid question in the POST body.'
     });
   }
 
@@ -627,7 +632,7 @@ router.post('/', async (req, res) => {
     res.json(response);
   } catch (error) {
     console.error('Chat endpoint error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Internal server error',
       answer: "I'm experiencing technical difficulties. Please try again later or contact us directly at +44 (0)121 765 4166."
     });
