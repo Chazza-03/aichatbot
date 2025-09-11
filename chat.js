@@ -3,6 +3,9 @@ const path = require('path');
 const express = require('express');
 const OpenAI = require('openai');
 
+// Import security middleware
+const { limiter, sanitizeInput, injectionGuard } = require('./securityMiddleware');
+
 // Configuration with validation
 const CONFIG = {
   EMBEDDING_MODEL: process.env.EMBEDDING_MODEL || 'text-embedding-3-small',
@@ -11,7 +14,7 @@ const CONFIG = {
   MAX_CONTEXT_ITEMS: Math.max(1, Math.min(20, parseInt(process.env.MAX_CONTEXT_ITEMS) || 6)),
   CACHE_TTL: 5 * 60 * 1000, // 5 minutes
   MAX_TOKENS: 600,
-  TEMPERATURE: 0.1, // Low temperature for factual accuracy
+  TEMPERATURE: 0.1,
   KEYWORD_BOOST: 0.1,
   INTENT_BOOST: 0.15
 };
@@ -573,7 +576,6 @@ Answer the user's question based SOLELY on the context above. Speak as a represe
     }
   }
 
-  // *** REMOVED the old buildUserPrompt function as the prompt is now handled in the system message.
 
   // Clean up any markdown formatting artifacts
   cleanupFormattingArtifacts(text) {
@@ -616,28 +618,28 @@ router.get('/health', (req, res) => {
   });
 });
 
-// Main chat endpoint
-router.post('/', async (req, res) => {
-  const { question, sessionId } = req.body || {};
+// Main chat endpoint with security middleware
+router.post(
+  '/',
+  limiter,          // 1. Prevent spamming
+  sanitizeInput,    // 2. Validate & clean input
+  injectionGuard,   // 3. Block prompt injection attempts
+  async (req, res) => {
+    const { question, sessionId } = req.body;
 
-  // Validation
-  if (!question || typeof question !== 'string' || !question.trim()) {
-    return res.status(400).json({
-      error: 'Please provide a valid question in the POST body.'
-    });
+    try {
+      const response = await chatBot.processQuery(question.trim(), sessionId || 'default');
+      res.json(response);
+    } catch (error) {
+      console.error('Chat endpoint error:', error);
+      res.status(500).json({
+        error: 'Internal server error',
+        answer: "I'm experiencing technical difficulties. Please try again later or contact us directly at +44 (0)121 765 4166."
+      });
+    }
   }
-
-  try {
-    const response = await chatBot.processQuery(question.trim(), sessionId || 'default');
-    res.json(response);
-  } catch (error) {
-    console.error('Chat endpoint error:', error);
-    res.status(500).json({
-      error: 'Internal server error',
-      answer: "I'm experiencing technical difficulties. Please try again later or contact us directly at +44 (0)121 765 4166."
-    });
-  }
-});
+);
 
 module.exports = router;
+
 
