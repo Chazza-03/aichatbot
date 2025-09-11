@@ -1,5 +1,5 @@
-const fs = require('fs');
 const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const OpenAI = require('openai');
 
@@ -11,20 +11,20 @@ const CONFIG = {
   EMBEDDING_MODEL: process.env.EMBEDDING_MODEL || 'text-embedding-3-small',
   CHAT_MODEL: process.env.CHAT_MODEL || 'gpt-4o-mini',
   SIMILARITY_THRESHOLD: Math.max(0.1, Math.min(1.0, parseFloat(process.env.SIMILARITY_THRESHOLD) || 0.4)),
-  MAX_CONTEXT_ITEMS: Math.max(1, Math.min(20, parseInt(process.env.MAX_CONTEXT_ITEMS) || 6)),
-  CACHE_TTL: 5 * 60 * 1000, // 5 minutes
-  MAX_TOKENS: 600,
+  MAX_CONTEXT_ITEMS: Math.max(1, Math.min(20, parseInt(process.env.MAX_CONTEXT_ITEMS) || 8)),
+  CACHE_TTL: 5 * 60 * 1000,
+  MAX_TOKENS: 800,
   TEMPERATURE: 0.1,
   KEYWORD_BOOST: 0.1,
   INTENT_BOOST: 0.15,
-  RELATED_DEPTH: 2, // Max recursion depth for related questions
-  RELATED_SCORE_DECAY: 0.8 // Decay factor for related item scores
+  CATEGORY_BOOST: 0.08,
+  PROCEDURAL_BOOST: 0.2
 };
 
 // Initialize OpenAI client
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Knowledge base storage
+// Enhanced Knowledge Base with procedural awareness
 class KnowledgeBase {
   constructor() {
     this.items = [];
@@ -62,8 +62,9 @@ class KnowledgeBase {
     this.subCategoryIndex.clear();
 
     this.items.forEach((item, index) => {
-      const metadata = item.metadata;
-      if (!metadata) return;
+      const metadata = item.metadata || {};
+      const category = item.category || 'uncategorized';
+      const subCategory = item.sub_category || 'general';
 
       // Build keyword index
       if (metadata.keywords && Array.isArray(metadata.keywords)) {
@@ -85,23 +86,18 @@ class KnowledgeBase {
         this.intentIndex.get(intent).push(index);
       }
 
-      // Build category index
-      if (item.category) {
-        const category = item.category.toLowerCase().trim();
-        if (!this.categoryIndex.has(category)) {
-          this.categoryIndex.set(category, []);
-        }
-        this.categoryIndex.get(category).push(index);
+      // Build category indexes
+      const normalizedCategory = category.toLowerCase().trim();
+      if (!this.categoryIndex.has(normalizedCategory)) {
+        this.categoryIndex.set(normalizedCategory, []);
       }
+      this.categoryIndex.get(normalizedCategory).push(index);
 
-      // Build sub-category index
-      if (item.sub_category) {
-        const subCategory = item.sub_category.toLowerCase().trim();
-        if (!this.subCategoryIndex.has(subCategory)) {
-          this.subCategoryIndex.set(subCategory, []);
-        }
-        this.subCategoryIndex.get(subCategory).push(index);
+      const normalizedSubCategory = subCategory.toLowerCase().trim();
+      if (!this.subCategoryIndex.has(normalizedSubCategory)) {
+        this.subCategoryIndex.set(normalizedSubCategory, []);
       }
+      this.subCategoryIndex.get(normalizedSubCategory).push(index);
     });
   }
 
@@ -124,13 +120,13 @@ class KnowledgeBase {
     return this.dotProduct(queryVector, itemVector) / denominator;
   }
 
-  // Enhanced matching with metadata boosting and category/subcategory consideration
+  // Enhanced matching with metadata and procedural awareness
   findTopMatches(queryEmbedding, query, k = CONFIG.MAX_CONTEXT_ITEMS) {
     if (!this.isLoaded) return [];
 
     const queryWords = this.extractQueryWords(query);
     const detectedIntent = this.detectIntent(query);
-    const detectedCategory = this.detectCategory(query); // New: attempt to detect category
+    const isProcedural = this.isProceduralQuery(query);
 
     const scores = this.items.map((item, index) => {
       let baseScore = item.embedding
@@ -139,7 +135,7 @@ class KnowledgeBase {
 
       if (baseScore <= 0) return { item, score: baseScore, boosts: {} };
 
-      const boosts = this.calculateBoosts(item, queryWords, detectedIntent, detectedCategory, index);
+      const boosts = this.calculateBoosts(item, queryWords, detectedIntent, index, isProcedural);
       const boostedScore = baseScore + boosts.total;
 
       return {
@@ -166,8 +162,8 @@ class KnowledgeBase {
   detectIntent(query) {
     const lowerQuery = query.toLowerCase();
 
-    // Expanded intent detection patterns, including procedural
     const intentPatterns = {
+      'procedural': /\b(how to|steps|process|procedure|guide|instructions|set up|arrange|organize)\b/i,
       'billing_info': /\b(bill|billing|invoice|cost|price|fee|charge|payment)\b/i,
       'contact_info': /\b(contact|phone|email|speak|call|reach|touch)\b/i,
       'service_info': /\b(service|what|how|do you|can you|offer)\b/i,
@@ -175,8 +171,7 @@ class KnowledgeBase {
       'hours_info': /\b(hours|open|closed|time|when)\b/i,
       'shipping_info': /\b(ship|shipping|freight|delivery|transport)\b/i,
       'storage_info': /\b(storage|warehouse|store|keep)\b/i,
-      'customs_info': /\b(customs|clearance|import|export|brokerage)\b/i,
-      'procedural': /\b(how to|steps|process|guide|procedure|way to|instructions)\b/i
+      'customs_info': /\b(customs|clearance|import|export|brokerage)\b/i
     };
 
     for (const [intent, pattern] of Object.entries(intentPatterns)) {
@@ -188,37 +183,24 @@ class KnowledgeBase {
     return null;
   }
 
-  detectCategory(query) {
+  isProceduralQuery(query) {
     const lowerQuery = query.toLowerCase();
-
-    // Simple category detection based on keywords
-    const categoryPatterns = {
-      'company_information': /\b(company|about|who|what|history|leadership|founded|experience)\b/i,
-      'accreditations': /\b(accreditation|certification|membership|aeo|fors|rha|bifa)\b/i,
-      // Add more as needed based on KB structure
-    };
-
-    for (const [category, pattern] of Object.entries(categoryPatterns)) {
-      if (pattern.test(lowerQuery)) {
-        return category;
-      }
-    }
-
-    return null;
+    return /\b(how to|steps|process|procedure|guide|instructions|set up|arrange|organize)\b/i.test(lowerQuery);
   }
 
-  calculateBoosts(item, queryWords, detectedIntent, detectedCategory, itemIndex) {
+  calculateBoosts(item, queryWords, detectedIntent, itemIndex, isProcedural) {
     const boosts = {
       keyword: 0,
       intent: 0,
-      priority: 0,
       category: 0,
-      sub_category: 0,
+      procedural: 0,
+      priority: 0,
       total: 0
     };
 
-    const metadata = item.metadata;
-    if (!metadata) return boosts;
+    const metadata = item.metadata || {};
+    const category = item.category || '';
+    const subCategory = item.sub_category || '';
 
     // Keyword matching boost
     if (metadata.keywords && Array.isArray(metadata.keywords)) {
@@ -236,54 +218,78 @@ class KnowledgeBase {
       boosts.intent = CONFIG.INTENT_BOOST;
     }
 
+    // Category matching boost (for procedural queries)
+    if (isProcedural && (category.toLowerCase().includes('process') || 
+                         category.toLowerCase().includes('procedure') ||
+                         subCategory.toLowerCase().includes('process') ||
+                         subCategory.toLowerCase().includes('procedure'))) {
+      boosts.category = CONFIG.CATEGORY_BOOST;
+    }
+
+    // Procedural content boost
+    if (isProcedural && this.isProceduralContent(item)) {
+      boosts.procedural = CONFIG.PROCEDURAL_BOOST;
+    }
+
     // Priority boost
     const priorityWeights = { 'high': 0.1, 'medium': 0.05, 'low': 0.02 };
     if (metadata.priority && priorityWeights[metadata.priority]) {
       boosts.priority = priorityWeights[metadata.priority];
     }
 
-    // Category boost
-    if (detectedCategory && item.category === detectedCategory) {
-      boosts.category = 0.1;
-    }
-
-    // Sub-category boost (if applicable)
-    if (item.sub_category && queryWords.some(word => item.sub_category.toLowerCase().includes(word))) {
-      boosts.sub_category = 0.05;
-    }
-
-    boosts.total = boosts.keyword + boosts.intent + boosts.priority + boosts.category + boosts.sub_category;
+    boosts.total = boosts.keyword + boosts.intent + boosts.category + boosts.procedural + boosts.priority;
     return boosts;
   }
 
-  // Get related questions based on metadata, with recursion and visited set to avoid cycles
-  getRelatedChain(itemIndex, depth = CONFIG.RELATED_DEPTH, visited = new Set(), score = 1.0, decay = CONFIG.RELATED_SCORE_DECAY) {
-    if (depth <= 0 || visited.has(itemIndex)) return [];
+  isProceduralContent(item) {
+    const answer = item.A || item.answer || '';
+    return /\b(step|first|next|then|finally|process|procedure|guide|instructions)\b/i.test(answer);
+  }
 
-    visited.add(itemIndex);
-    const item = this.items[itemIndex];
-    if (!item?.metadata?.related_questions) return [];
+  // Enhanced related content finding
+  getRelatedContent(mainMatchIndex, maxRelated = 4) {
+    const mainItem = this.items[mainMatchIndex];
+    if (!mainItem) return [];
 
-    const chain = [];
-    item.metadata.related_questions.forEach(relatedIndex => {
-      if (relatedIndex >= 0 && relatedIndex < this.items.length && !visited.has(relatedIndex)) {
-        const relatedItem = this.items[relatedIndex];
-        chain.push({
-          item: relatedItem,
-          score: score * decay,
-          isRelated: true
-        });
-        // Recurse
-        const deeperChain = this.getRelatedChain(relatedIndex, depth - 1, visited, score * decay, decay);
-        chain.push(...deeperChain);
-      }
-    });
+    const relatedItems = new Set();
+    const metadata = mainItem.metadata || {};
 
-    return chain;
+    // Get related questions from metadata
+    if (metadata.related_questions && Array.isArray(metadata.related_questions)) {
+      metadata.related_questions.slice(0, maxRelated).forEach(index => {
+        if (index < this.items.length) {
+          relatedItems.add(this.items[index]);
+        }
+      });
+    }
+
+    // Get items from same category
+    const category = mainItem.category;
+    if (category && this.categoryIndex.has(category.toLowerCase())) {
+      const categoryItems = this.categoryIndex.get(category.toLowerCase());
+      categoryItems.slice(0, 2).forEach(index => {
+        if (index !== mainMatchIndex) {
+          relatedItems.add(this.items[index]);
+        }
+      });
+    }
+
+    // Get items from same sub-category
+    const subCategory = mainItem.sub_category;
+    if (subCategory && this.subCategoryIndex.has(subCategory.toLowerCase())) {
+      const subCategoryItems = this.subCategoryIndex.get(subCategory.toLowerCase());
+      subCategoryItems.slice(0, 2).forEach(index => {
+        if (index !== mainMatchIndex) {
+          relatedItems.add(this.items[index]);
+        }
+      });
+    }
+
+    return Array.from(relatedItems).slice(0, maxRelated);
   }
 }
 
-// Enhanced pattern matching utilities
+// Enhanced PatternMatcher with procedural detection
 class PatternMatcher {
   static GREETING_PATTERNS = [
     /^(hi|hello|hey|howdy|greetings|good\s(morning|afternoon|evening)|yo|sup|what's up|hi there|hello there)\b/i,
@@ -296,14 +302,10 @@ class PatternMatcher {
     /^how's\it\s+going\??$/i
   ];
 
-  static CONTACT_PATTERNS = [
-    /(who (to )?(contact|speak to|call|email|reach).*(about|for))/i,
-    /(contact.*(details|info|information))/i,
-    /(phone.*number)/i,
-    /(email.*address)/i,
-    /(who.*contact)/i,
-    /(speak.*to)/i,
-    /(get.*in.*touch)/i
+  static PROCEDURAL_PATTERNS = [
+    /\b(how to|steps?|process|procedure|guide|instructions?|set up|arrange|organize|get started)\b/i,
+    /\b(what are the steps|what is the process|how do I)\b/i,
+    /\b(first|next|then|finally|after that)\b.*\?/i
   ];
 
   static isGreeting(message) {
@@ -311,120 +313,69 @@ class PatternMatcher {
     return this.GREETING_PATTERNS.some(pattern => pattern.test(trimmed));
   }
 
-  static isContactQuery(message) {
-    return this.CONTACT_PATTERNS.some(pattern => pattern.test(message));
-  }
-
-  static isProceduralQuery(message) {
-    const lower = message.toLowerCase();
-    return /\b(how to|steps|process|guide|procedure|way to|instructions)\b/i.test(lower);
+  static isProcedural(message) {
+    return this.PROCEDURAL_PATTERNS.some(pattern => pattern.test(message));
   }
 }
 
-// Enhanced response generators
-class ResponseGenerator {
-  static GREETING_RESPONSES = {
-    morning: (match) => `${match}! How can I help you with Jeavons Eurotir services today?`,
-    thanks: () => "You're welcome! Is there anything else I can help you with?",
-    goodbye: () => "Goodbye! Feel free to reach out if you have any more questions about our services.",
-    howAreYou: () => "I'm doing well, thank you! I'm here to help you with any questions about Jeavons Eurotir's services. How can I assist you today?",
-    default: [
-      "Hello! How can I assist you with Jeavons Eurotir services today?",
-      "Hi there! What can I help you with regarding our logistics services?",
-      "Hello! I'm here to help with questions about warehousing, shipping, customs, and freight services. What do you need assistance with?",
-      "Hi! How can I help you with Jeavons Eurotir today?"
-    ]
-  };
-
-  static generateGreeting(message) {
-    const lower = message.toLowerCase().trim();
-
-    // Time-specific greetings
-    const timeMatch = lower.match(/good\s(morning|afternoon|evening)/i);
-    if (timeMatch) return this.GREETING_RESPONSES.morning(timeMatch[0]);
-
-    // Thank you responses
-    if (/^(thanks?|thank\s+(you|u))/i.test(lower)) {
-      return this.GREETING_RESPONSES.thanks();
-    }
-
-    // Goodbye responses
-    if (/^(goodbye|bye|see ya|see you|farewell)/i.test(lower)) {
-      return this.GREETING_RESPONSES.goodbye();
-    }
-
-    // How are you responses
-    if (/how\s+(are\s+you|are\s+things|is\s+going)/i.test(lower)) {
-      return this.GREETING_RESPONSES.howAreYou();
-    }
-
-    // Random default greeting
-    const defaults = this.GREETING_RESPONSES.default;
-    return defaults[Math.floor(Math.random() * defaults.length)];
-  }
-}
-
-// Enhanced context builder with metadata awareness and related chaining
+// Enhanced ContextBuilder for procedural questions
 class ContextBuilder {
   static PRIORITY_WEIGHTS = { high: 3, medium: 2, low: 1 };
 
   static build(matches, userQuestion, knowledgeBase) {
-    if (!matches.length) return { contextText: '', relatedQuestions: [] };
+    if (!matches.length) return { contextText: '', relatedContent: [] };
 
-    const seenIntents = new Set();
-    const prioritized = this.prioritizeMatches(matches);
-    const allMatches = [...prioritized]; // Start with primary matches
-    const visited = new Set();
-    let relatedQuestions = [];
-
-    // Expand with related chains, especially for procedural queries
-    const isProcedural = PatternMatcher.isProceduralQuery(userQuestion);
-    const maxDepth = isProcedural ? CONFIG.RELATED_DEPTH : 1;
-
-    for (let i = 0; i < prioritized.length; i++) {
-      const match = prioritized[i];
-      const itemIndex = knowledgeBase.items.findIndex(kbItem => kbItem === match.item);
-      if (itemIndex === -1) continue;
-
-      // Get related chain
-      const relatedChain = knowledgeBase.getRelatedChain(itemIndex, maxDepth, new Set(visited));
-      allMatches.push(...relatedChain);
-
-      // Collect related questions for suggestion (from top match)
-      if (i === 0 && relatedQuestions.length === 0) {
-        relatedQuestions = knowledgeBase.getRelatedQuestions(itemIndex, 3); // Legacy method for suggestions
-      }
-    }
-
-    // Deduplicate and reprioritize all matches (including related)
-    const uniqueMatches = Array.from(new Map(allMatches.map(m => [m.item.question, m])).values());
-    const finalPrioritized = this.prioritizeMatches(uniqueMatches);
-
+    const isProcedural = PatternMatcher.isProcedural(userQuestion);
+    const prioritized = this.prioritizeMatches(matches, isProcedural);
     let contextText = '';
+    let relatedContent = [];
 
-    for (const match of finalPrioritized) {
+    // For procedural questions, include more context and related content
+    const maxItems = isProcedural ? Math.min(6, CONFIG.MAX_CONTEXT_ITEMS) : CONFIG.MAX_CONTEXT_ITEMS;
+
+    for (let i = 0; i < Math.min(prioritized.length, maxItems); i++) {
+      const match = prioritized[i];
       const { item, score } = match;
       const metadata = item.metadata || {};
 
-      // Avoid duplicate intents unless high confidence
-      if (seenIntents.has(metadata.intent) && score < 0.7) continue;
-      seenIntents.add(metadata.intent);
+      contextText += this.formatMatch(item, metadata, match.boosts);
 
-      // Add category and sub_category to formatted text for better structure
-      const categoryTag = item.category ? `[Category: ${item.category}] ` : '';
-      const subCategoryTag = item.sub_category ? `[Sub-category: ${item.sub_category}] ` : '';
+      // Add related content for the first high-scoring match in procedural queries
+      if (i === 0 && isProcedural && relatedContent.length === 0) {
+        const itemIndex = knowledgeBase.items.findIndex(kbItem => kbItem === item);
+        if (itemIndex !== -1) {
+          relatedContent = knowledgeBase.getRelatedContent(itemIndex);
+        }
+      }
 
-      contextText += categoryTag + subCategoryTag + this.formatMatch(item, metadata, match.boosts);
-
-      // Early exit for high-confidence matches
-      if (score > 0.8 && contextText.length > 500) break;
+      if (score > 0.8 && contextText.length > 600) break;
     }
 
-    return { contextText, relatedQuestions };
+    // Add related content to context for procedural questions
+    if (isProcedural && relatedContent.length > 0) {
+      contextText += '\n\n## Related Information:\n';
+      relatedContent.forEach((item, index) => {
+        if (index < 3) { // Limit to 3 related items
+          const metadata = item.metadata || {};
+          contextText += this.formatMatch(item, metadata, {});
+        }
+      });
+    }
+
+    return { contextText, relatedContent };
   }
 
-  static prioritizeMatches(matches) {
+  static prioritizeMatches(matches, isProcedural) {
     return matches.sort((a, b) => {
+      // For procedural queries, prioritize items with procedural content
+      if (isProcedural) {
+        const aIsProcedural = /\b(step|first|next|then|finally)\b/i.test(a.item.A || a.item.answer || '');
+        const bIsProcedural = /\b(step|first|next|then|finally)\b/i.test(b.item.A || b.item.answer || '');
+        
+        if (aIsProcedural && !bIsProcedural) return -1;
+        if (!aIsProcedural && bIsProcedural) return 1;
+      }
+
       // Primary: by score
       if (b.score !== a.score) return b.score - a.score;
 
@@ -436,102 +387,210 @@ class ContextBuilder {
   }
 
   static formatMatch(item, metadata, boosts = {}) {
-    const intentTag = metadata.intent ? `[${metadata.intent.replace('_', ' ').toUpperCase()}] ` : '';
-    const priorityTag = metadata.priority ? `(${metadata.priority}) ` : '';
-    const keywordTags = metadata.keywords ? `Keywords: ${metadata.keywords.join(', ')}` : '';
+    const intentTag = metadata.intent ? `[${metadata.intent.replace('_', ' ').toUpperCase()}]` : '';
+    const priorityTag = metadata.priority ? `(${metadata.priority})` : '';
+    const categoryTag = item.category ? `Category: ${item.category}` : '';
+    const subCategoryTag = item.sub_category ? `Sub-category: ${item.sub_category}` : '';
 
-    const question = item.question || '';
-    const answer = item.answer || item.text || '';
+    const question = item.Q || item.question || '';
+    const answer = item.A || item.answer || item.text || '';
 
-    let formatted = `\n${intentTag}${priorityTag}Q: ${question}\nA: ${answer}`;
+    let formatted = `\n${intentTag}${priorityTag}\nQ: ${question}\nA: ${answer}\n`;
 
-    if (keywordTags) {
-      formatted += `\n${keywordTags}`;
+    if (categoryTag) {
+      formatted += `${categoryTag}`;
+    }
+    if (subCategoryTag) {
+      formatted += ` | ${subCategoryTag}`;
     }
 
     if (metadata.context) {
       formatted += `\nContext: ${metadata.context}`;
     }
 
-    formatted += '\n';
+    formatted += '\n---\n';
     return formatted;
   }
+}
 
-  // Legacy getRelatedQuestions for suggestions
-  static getRelatedQuestions(itemIndex, maxRelated = 3, knowledgeBase) {
-    const item = knowledgeBase.items[itemIndex];
-    if (!item?.metadata?.related_questions) return [];
+// Enhanced system prompt for procedural questions
+class SystemPromptBuilder {
+  static buildSystemPrompt(context, isProcedural = false) {
+    const basePrompt = `
+# ROLE & PERSONA
+You are an official AI assistant for Jeavons Eurotir Ltd., a family-owned logistics company. You speak on behalf of the company. You are helpful, professional, and proud of the company's 46 years of experience.
 
-    return item.metadata.related_questions
-      .slice(0, maxRelated)
-      .map(relatedIndex => {
-        if (relatedIndex < knowledgeBase.items.length) {
-          const relatedItem = knowledgeBase.items[relatedIndex];
-          return {
-            question: relatedItem.question,
-            answer: relatedItem.answer
-          };
-        }
-        return null;
-      })
-      .filter(Boolean);
+# CORE DIRECTIVES
+1.  **FIRST PERSON:** Always refer to the company as "we", "us", or "our". NEVER use third-person like "Jeavons Eurotir offers..." or "They offer...". Example: "We offer global shipping services" NOT "Jeavons Eurotir offers global shipping."
+2.  **STRICT CONTEXT USE:** Your knowledge is STRICTLY LIMITED to the context provided below. If the answer is not found in the context, you MUST say so. DO NOT HALLUCINATE or make up information.
+3.  **NO KNOWLEDGE RESPONSE:** If you lack information, say: "I don't have that specific information on hand," or "I'm not sure about that detail," and guide them to contact the team.
+4.  **FORMATTING:** Respond in clear, plain text. Use natural paragraphs. Do NOT use markdown, bullet points (*, -), or numbered lists.
+
+# CONTEXT TO USE:
+${context}
+
+# FINAL INSTRUCTION
+Answer the user's question based SOLELY on the context above. Speak as a representative of Jeavons Eurotir.
+    `.trim();
+
+    if (isProcedural) {
+      return basePrompt + `
+
+# SPECIAL INSTRUCTIONS FOR PROCEDURAL QUESTIONS:
+- If the context contains multiple related procedures or steps, synthesize them into a coherent process
+- Use transitional words like "First", "Next", "Then", "Finally" to create a clear flow
+- If steps are mentioned across different context items, combine them logically
+- Maintain the first-person perspective throughout the process description
+      `.trim();
+    }
+
+    return basePrompt;
   }
 }
 
-// Enhanced contact handler
-class ContactHandler {
-  static shouldIncludeContact(question, matches, answer) {
-    if (PatternMatcher.isGreeting(question)) return false;
-
-    return PatternMatcher.isContactQuery(question) ||
-      matches.length === 0 ||
-      matches[0]?.score < 0.3 ||
-      /don'?t know|unsure|not sure|no information|sorry|apologize/i.test(answer);
+// Enhanced main chatbot class
+class ChatBot {
+  constructor() {
+    this.knowledgeBase = new KnowledgeBase();
+    this.cache = new QueryCache();
+    this.conversationHistory = new Map();
+    this.knowledgeBase.load();
   }
 
-  static formatContactInfo(question, matches, answer) {
-    // Look for contact info in matches
-    const contactMatch = matches.find(m =>
-      m.item.metadata?.intent === 'contact_info' ||
-      m.item.metadata?.keywords?.includes('contact') ||
-      /contact|phone|email/i.test(m.item.question || '')
-    );
+  async processQuery(question, sessionId = 'default') {
+    if (PatternMatcher.isGreeting(question)) {
+      return {
+        answer: ResponseGenerator.generateGreeting(question),
+        matches: [],
+        context_used: false,
+        detected_intent: null,
+        is_greeting: true,
+        related_content: []
+      };
+    }
 
-    if (contactMatch) {
-      const contactAnswer = contactMatch.item.answer || '';
-      if (!answer.includes(contactAnswer)) {
-        return `${answer}\n\n${contactAnswer}`;
+    const cacheKey = question.toLowerCase().trim();
+    const cached = this.cache.get(cacheKey);
+    if (cached) return cached;
+
+    try {
+      const embeddingResponse = await openai.embeddings.create({
+        model: CONFIG.EMBEDDING_MODEL,
+        input: question
+      });
+      const queryEmbedding = embeddingResponse.data[0].embedding;
+
+      const matches = this.knowledgeBase.findTopMatches(queryEmbedding, question);
+      const isProcedural = PatternMatcher.isProcedural(question);
+      
+      const { contextText, relatedContent } = ContextBuilder.build(matches, question, this.knowledgeBase);
+
+      if (contextText.length === 0) {
+        const noContextResponse = {
+          answer: "I don't have specific information about that on hand. For detailed or specialized inquiries, please contact our team directly at +44 (0)121 765 4166. They'll be happy to assist you.",
+          matches: [],
+          context_used: false,
+          detected_intent: this.knowledgeBase.detectIntent(question),
+          is_greeting: false,
+          related_content: []
+        };
+        return noContextResponse;
       }
-    }
 
-    // Fallback to default contact
-    if (!answer.includes('+44') && !answer.includes('sales@jeavonseurotir.co.uk')) {
-      return `${answer} For more information, please contact us at +44 (0)121 765 4166.`;
-    }
+      const systemPrompt = SystemPromptBuilder.buildSystemPrompt(contextText, isProcedural);
+      
+      const chatResponse = await openai.chat.completions.create({
+        model: CONFIG.CHAT_MODEL,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: question }
+        ],
+        temperature: CONFIG.TEMPERATURE,
+        max_tokens: CONFIG.MAX_TOKENS
+      });
 
-    return answer;
+      let answer = chatResponse.choices?.[0]?.message?.content ||
+        "I apologize, but I couldn't generate a response at this time.";
+
+      answer = this.cleanupFormattingArtifacts(answer);
+
+      const detectedIntent = this.knowledgeBase.detectIntent(question);
+
+      const response = {
+        answer,
+        matches: matches.map(m => ({
+          score: m.score,
+          base_score: m.baseScore,
+          boosts: m.boosts,
+          Q: m.item.Q || m.item.question,
+          A: m.item.A || m.item.answer,
+          category: m.item.category,
+          sub_category: m.item.sub_category,
+          metadata: m.item.metadata
+        })),
+        context_used: contextText.length > 0,
+        detected_intent: detectedIntent,
+        is_greeting: false,
+        is_procedural: isProcedural,
+        related_content: relatedContent.map(item => ({
+          Q: item.Q || item.question,
+          A: item.A || item.answer,
+          category: item.category,
+          sub_category: item.sub_category
+        }))
+      };
+
+      if (matches.length > 0) {
+        this.cache.set(cacheKey, response);
+      }
+
+      return response;
+
+    } catch (error) {
+      console.error('Error processing query:', error);
+      throw new Error('Internal server error');
+    }
+  }
+
+  cleanupFormattingArtifacts(text) {
+    return text
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/\*([^*]+)\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      .replace(/_([^_]+)_/g, '$1')
+      .replace(/^#{1,6}\s+(.+)$/gm, '$1')
+      .replace(/^\s*[-*•]\s+/gm, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  getStats() {
+    return {
+      knowledgeBaseSize: this.knowledgeBase.items.length,
+      keywordIndexSize: this.knowledgeBase.keywordIndex.size,
+      intentIndexSize: this.knowledgeBase.intentIndex.size,
+      categoryIndexSize: this.knowledgeBase.categoryIndex.size,
+      cacheSize: this.cache.size(),
+      isKBLoaded: this.knowledgeBase.isLoaded
+    };
   }
 }
 
-// Cache with TTL
+// Cache implementation (unchanged)
 class QueryCache {
   constructor(ttl = CONFIG.CACHE_TTL) {
     this.cache = new Map();
     this.ttl = ttl;
-
-    // Cleanup expired entries every 10 minutes
     setInterval(() => this.cleanup(), 10 * 60 * 1000);
   }
 
   get(key) {
     const entry = this.cache.get(key);
     if (!entry) return null;
-
     if (Date.now() - entry.timestamp > this.ttl) {
       this.cache.delete(key);
       return null;
     }
-
     return entry.data;
   }
 
@@ -556,166 +615,63 @@ class QueryCache {
   }
 }
 
-// Enhanced main chatbot class
-class ChatBot {
-  constructor() {
-    this.knowledgeBase = new KnowledgeBase();
-    this.cache = new QueryCache();
-    this.systemPrompt = this.buildSystemPrompt(); // *** UPDATED PROMPT
-    this.conversationHistory = new Map();
+// ResponseGenerator (unchanged)
+class ResponseGenerator {
+  static GREETING_RESPONSES = {
+    morning: (match) => `${match}! How can I help you with Jeavons Eurotir services today?`,
+    thanks: () => "You're welcome! Is there anything else I can help you with?",
+    goodbye: () => "Goodbye! Feel free to reach out if you have any more questions about our services.",
+    howAreYou: () => "I'm doing well, thank you! I'm here to help you with any questions about Jeavons Eurotir's services. How can I assist you today?",
+    default: [
+      "Hello! How can I assist you with Jeavons Eurotir services today?",
+      "Hi there! What can I help you with regarding our logistics services?",
+      "Hello! I'm here to help with questions about warehousing, shipping, customs, and freight services. What do you need assistance with?",
+      "Hi! How can I help you with Jeavons Eurotir today?"
+    ]
+  };
 
-    // Load KB at startup
-    this.knowledgeBase.load();
+  static generateGreeting(message) {
+    const lower = message.toLowerCase().trim();
+    const timeMatch = lower.match(/good\s(morning|afternoon|evening)/i);
+    if (timeMatch) return this.GREETING_RESPONSES.morning(timeMatch[0]);
+    if (/^(thanks?|thank\s+(you|u))/i.test(lower)) return this.GREETING_RESPONSES.thanks();
+    if (/^(goodbye|bye|see ya|see you|farewell)/i.test(lower)) return this.GREETING_RESPONSES.goodbye();
+    if (/how\s+(are\s+you|are\s+things|is\s+it\s+going)/i.test(lower)) return this.GREETING_RESPONSES.howAreYou();
+    
+    const defaults = this.GREETING_RESPONSES.default;
+    return defaults[Math.floor(Math.random() * defaults.length)];
+  }
+}
+
+// ContactHandler (unchanged)
+class ContactHandler {
+  static shouldIncludeContact(question, matches, answer) {
+    if (PatternMatcher.isGreeting(question)) return false;
+    return PatternMatcher.isContactQuery(question) ||
+      matches.length === 0 ||
+      matches[0]?.score < 0.3 ||
+      /don'?t know|unsure|not sure|no information|sorry|apologize/i.test(answer);
   }
 
-  buildSystemPrompt() {
-    return `
-# ROLE & PERSONA
-You are an official AI assistant for Jeavons Eurotir Ltd., a family-owned logistics company. You speak on behalf of the company. You are helpful, professional, and proud of the company's 46 years of experience.
+  static formatContactInfo(question, matches, answer) {
+    const contactMatch = matches.find(m =>
+      m.item.metadata?.intent === 'contact_info' ||
+      m.item.metadata?.keywords?.includes('contact') ||
+      /contact|phone|email/i.test(m.item.Q || m.item.question || '')
+    );
 
-# CORE DIRECTIVES
-1.  **FIRST PERSON:** Always refer to the company as "we", "us", or "our". NEVER use third-person like "Jeavons Eurotir offers..." or "They offer...". Example: "We offer global shipping services" NOT "Jeavons Eurotir offers global shipping."
-2.  **STRICT CONTEXT USE:** Your knowledge is STRICTLY LIMITED to the context provided below. If the answer is not found in the context, you MUST say so. DO NOT HALLUCINATE or make up information.
-3.  **NO KNOWLEDGE RESPONSE:** If you lack information, say: "I don't have that specific information on hand," or "I'm not sure about that detail," and guide them to contact the team.
-4.  **FORMATTING:** Respond in clear, plain text. Use natural paragraphs. Do NOT use markdown, bullet points (*, -), or numbered lists.
-5.  **PROCEDURAL QUERIES:** If the question asks for a process, steps, or procedure, construct a coherent explanation by combining and logically ordering relevant facts from the context. Do not add unsubstantiated details.
-
-# CONTEXT TO USE:
-{context}
-
-# FINAL INSTRUCTION
-Answer the user's question based SOLELY on the context above. Speak as a representative of Jeavons Eurotir.
-    `.trim();
-  }
-
-  async processQuery(question, sessionId = 'default') {
-    // Handle greetings
-    if (PatternMatcher.isGreeting(question)) {
-      return {
-        answer: ResponseGenerator.generateGreeting(question),
-        matches: [],
-        context_used: false,
-        detected_intent: null,
-        is_greeting: true,
-        related_questions: []
-      };
+    if (contactMatch) {
+      const contactAnswer = contactMatch.item.A || contactMatch.item.answer || '';
+      if (!answer.includes(contactAnswer)) {
+        return `${answer}\n\n${contactAnswer}`;
+      }
     }
 
-    // Check cache
-    const cacheKey = question.toLowerCase().trim();
-    const cached = this.cache.get(cacheKey);
-    if (cached) return cached;
-
-    try {
-      // Generate embedding
-      const embeddingResponse = await openai.embeddings.create({
-        model: CONFIG.EMBEDDING_MODEL,
-        input: question
-      });
-      const queryEmbedding = embeddingResponse.data[0].embedding;
-
-      // Find matches with enhanced metadata-aware scoring
-      const matches = this.knowledgeBase.findTopMatches(queryEmbedding, question);
-
-      // Build enhanced context with related chaining
-      const { contextText, relatedQuestions } = ContextBuilder.build(matches, question, this.knowledgeBase);
-
-      // *** CRITICAL: If no context is found, build a specific response to avoid hallucination.
-      if (contextText.length === 0) {
-        const noContextResponse = {
-          answer: "I don't have specific information about that on hand. For detailed or specialized inquiries, please contact our team directly at +44 (0)121 765 4166. They'll be happy to assist you.",
-          matches: [],
-          context_used: false,
-          detected_intent: this.knowledgeBase.detectIntent(question),
-          is_greeting: false,
-          related_questions: []
-        };
-        return noContextResponse;
-      }
-
-      // Generate response
-      const chatResponse = await openai.chat.completions.create({
-        model: CONFIG.CHAT_MODEL,
-        messages: [
-          { role: 'system', content: this.systemPrompt.replace('{context}', contextText) }, // *** Inject context into prompt
-          { role: 'user', content: question } // *** Simplified user prompt
-        ],
-        temperature: CONFIG.TEMPERATURE,
-        max_tokens: CONFIG.MAX_TOKENS
-      });
-
-      let answer = chatResponse.choices?.[0]?.message?.content ||
-        "I apologize, but I couldn't generate a response at this time.";
-
-      // Clean the answer
-      answer = this.cleanupFormattingArtifacts(answer);
-
-      // Enhanced contact handling
-      if (ContactHandler.shouldIncludeContact(question, matches, answer)) {
-        answer = ContactHandler.formatContactInfo(question, matches, answer);
-      }
-
-      const detectedIntent = this.knowledgeBase.detectIntent(question);
-
-      const response = {
-        answer,
-        matches: matches.map(m => ({
-          score: m.score,
-          base_score: m.baseScore,
-          boosts: m.boosts,
-          question: m.item.question,
-          answer: m.item.answer,
-          metadata: m.item.metadata
-        })),
-        context_used: contextText.length > 0,
-        detected_intent: detectedIntent,
-        is_greeting: false,
-        related_questions: relatedQuestions
-      };
-
-      // Cache successful responses
-      if (matches.length > 0) {
-        this.cache.set(cacheKey, response);
-      }
-
-      return response;
-
-    } catch (error) {
-      console.error('Error processing query:', error);
-      throw new Error('Internal server error');
+    if (!answer.includes('+44') && !answer.includes('sales@jeavonseurotir.co.uk')) {
+      return `${answer} For more information, please contact us at +44 (0)121 765 4166.`;
     }
-  }
 
-
-  // Clean up any markdown formatting artifacts
-  cleanupFormattingArtifacts(text) {
-    return text
-      // Remove markdown bold/italic
-      .replace(/\*\*([^*]+)\*\*/g, '$1')
-      .replace(/\*([^*]+)\*/g, '$1')
-      .replace(/__([^_]+)__/g, '$1')
-      .replace(/_([^_]+)_/g, '$1')
-      // Remove markdown headers
-      .replace(/^#{1,6}\s+(.+)$/gm, '$1')
-      // Replace bullet points with natural language (convert to paragraphs)
-      .replace(/^\s*[-*•]\s+(.+)$/gm, '$1 ')
-      // Clean up numbered lists
-      .replace(/^\s*\d+\.\s+(.+)$/gm, '$1 ')
-      // Clean up extra whitespace
-      .replace(/\n{3,}/g, '\n\n')
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
-
-  getStats() {
-    return {
-      knowledgeBaseSize: this.knowledgeBase.items.length,
-      keywordIndexSize: this.knowledgeBase.keywordIndex.size,
-      intentIndexSize: this.knowledgeBase.intentIndex.size,
-      categoryIndexSize: this.knowledgeBase.categoryIndex.size,
-      cacheSize: this.cache.size(),
-      isKBLoaded: this.knowledgeBase.isLoaded
-    };
+    return answer;
   }
 }
 
@@ -723,7 +679,6 @@ Answer the user's question based SOLELY on the context above. Speak as a represe
 const router = express.Router();
 const chatBot = new ChatBot();
 
-// Health check endpoint
 router.get('/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -732,12 +687,11 @@ router.get('/health', (req, res) => {
   });
 });
 
-// Main chat endpoint with security middleware
 router.post(
   '/',
-  limiter,          // 1. Prevent spamming
-  sanitizeInput,    // 2. Validate & clean input
-  injectionGuard,   // 3. Block prompt injection attempts
+  limiter,
+  sanitizeInput,
+  injectionGuard,
   async (req, res) => {
     const { question, sessionId } = req.body;
 
