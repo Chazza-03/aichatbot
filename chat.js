@@ -510,7 +510,7 @@ Answer the user's question based SOLELY on the context above. Speak as a represe
       // *** CRITICAL: If no context is found, build a specific response to avoid hallucination.
       if (contextText.length === 0) {
         const noContextResponse = {
-          answer: "I don't have specific information about that in my knowledge base. For detailed or specialized inquiries, please contact our team directly at +44 (0)121 765 4166 or sales@jeavonseurotir.co.uk. They'll be happy to assist you.",
+          answer: "I don't have specific information about that on hand. For detailed or specialized inquiries, please contact our team directly at +44 (0)121 765 4166. They'll be happy to assist you.",
           matches: [],
           context_used: false,
           detected_intent: this.knowledgeBase.detectIntent(question),
@@ -640,3 +640,4 @@ router.post('/', async (req, res) => {
 });
 
 module.exports = router;
+
