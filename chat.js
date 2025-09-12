@@ -504,10 +504,7 @@ class ChatBot {
   // NEW: Add closing phrase to answers
   addClosingPhrase(answerText, hasContext) {
     const closingPhrases = [
-      "Is there anything else I can help you with?",
-      "Feel free to ask if you have any other questions.",
-      "Let me know if you need assistance with anything else.",
-      "Please don't hesitate to contact our team if you need further assistance."
+      "Let me know if you need assistance with anything else."
     ];
     
     const selectedPhrase = closingPhrases[Math.floor(Math.random() * closingPhrases.length)];
@@ -781,3 +778,4 @@ router.post(
 );
 
 module.exports = router;
+
