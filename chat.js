@@ -38,6 +38,15 @@ class KnowledgeBase {
 
   load(filePath = path.join(__dirname, 'knowledge_embeddings.json')) {
     try {
+      // Check if file exists first
+      if (!fs.existsSync(filePath)) {
+        console.warn(`⚠ Knowledge base file not found: ${filePath}`);
+        this.items = [];
+        this.magnitudes = [];
+        this.isLoaded = false;
+        return;
+      }
+      
       const raw = fs.readFileSync(filePath, 'utf8');
       this.items = JSON.parse(raw);
       this.magnitudes = this.items.map(item =>
@@ -174,9 +183,22 @@ class KnowledgeBase {
       'customs_info': /\b(customs|clearance|import|export|brokerage)\b/i
     };
 
+    // Intent mapping to align with KB metadata intents
+    const intentMapping = {
+      'procedural': 'explain_process',
+      'billing_info': 'payment_info',
+      'contact_info': 'request_contact',
+      'service_info': 'service_inquiry',
+      'location_info': 'location_info',
+      'hours_info': 'operating_hours',
+      'shipping_info': 'shipping_inquiry',
+      'storage_info': 'storage_inquiry',
+      'customs_info': 'customs_inquiry'
+    };
+
     for (const [intent, pattern] of Object.entries(intentPatterns)) {
       if (pattern.test(lowerQuery)) {
-        return intent;
+        return intentMapping[intent] || intent;
       }
     }
 
@@ -315,6 +337,14 @@ class PatternMatcher {
 
   static isProcedural(message) {
     return this.PROCEDURAL_PATTERNS.some(pattern => pattern.test(message));
+  }
+
+  static isContactQuery(message) {
+    const contactPatterns = [
+      /\b(contact|phone|email|call|reach|speak|talk)\b/i,
+      /\b(how.*reach|how.*contact|get in touch)\b/i
+    ];
+    return contactPatterns.some(pattern => pattern.test(message));
   }
 }
 
@@ -457,6 +487,33 @@ class ChatBot {
     this.knowledgeBase.load();
   }
 
+  // NEW: Check if answer already has a closing phrase
+  answerHasClosingPhrase(answerText) {
+    const closingPhrasePatterns = [
+      /feel free to (contact|reach out|ask)/i,
+      /let me know if you need/i,
+      /is there anything else.*help with/i,
+      /please don't hesitate to contact/i,
+      /we're here to help/i,
+      /for more information.*contact/i,
+      /reach out to.*team.*assist/i
+    ];
+    return closingPhrasePatterns.some(pattern => pattern.test(answerText));
+  }
+
+  // NEW: Add closing phrase to answers
+  addClosingPhrase(answerText, hasContext) {
+    const closingPhrases = [
+      "Is there anything else I can help you with?",
+      "Feel free to ask if you have any other questions.",
+      "Let me know if you need assistance with anything else.",
+      "Please don't hesitate to contact our team if you need further assistance."
+    ];
+    
+    const selectedPhrase = closingPhrases[Math.floor(Math.random() * closingPhrases.length)];
+    return `${answerText}\n\n${selectedPhrase}`;
+  }
+
   async processQuery(question, sessionId = 'default') {
     if (PatternMatcher.isGreeting(question)) {
       return {
@@ -514,6 +571,11 @@ class ChatBot {
 
       answer = this.cleanupFormattingArtifacts(answer);
 
+      // NEW: Add closing phrase if appropriate
+      if (!PatternMatcher.isGreeting(question) && !this.answerHasClosingPhrase(answer)) {
+        answer = this.addClosingPhrase(answer, matches.length > 0);
+      }
+
       const detectedIntent = this.knowledgeBase.detectIntent(question);
 
       const response = {
@@ -548,7 +610,17 @@ class ChatBot {
 
     } catch (error) {
       console.error('Error processing query:', error);
-      throw new Error('Internal server error');
+      
+      let errorMessage = "I'm experiencing technical difficulties. Please try again later.";
+      
+      // More specific error messages
+      if (error.code === 'insufficient_quota') {
+        errorMessage = "I'm temporarily unavailable due to service limits. Please contact us directly at +44 (0)121 765 4166.";
+      } else if (error.code === 'rate_limit_exceeded') {
+        errorMessage = "I'm receiving too many requests right now. Please try again in a moment.";
+      }
+      
+      throw new Error(errorMessage);
     }
   }
 
@@ -576,7 +648,7 @@ class ChatBot {
   }
 }
 
-// Cache implementation (unchanged)
+// Cache implementation
 class QueryCache {
   constructor(ttl = CONFIG.CACHE_TTL) {
     this.cache = new Map();
@@ -615,7 +687,7 @@ class QueryCache {
   }
 }
 
-// ResponseGenerator (unchanged)
+// ResponseGenerator
 class ResponseGenerator {
   static GREETING_RESPONSES = {
     morning: (match) => `${match}! How can I help you with Jeavons Eurotir services today?`,
@@ -643,7 +715,7 @@ class ResponseGenerator {
   }
 }
 
-// ContactHandler (unchanged)
+// ContactHandler
 class ContactHandler {
   static shouldIncludeContact(question, matches, answer) {
     if (PatternMatcher.isGreeting(question)) return false;
