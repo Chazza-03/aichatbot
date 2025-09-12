@@ -18,7 +18,22 @@ const CONFIG = {
   KEYWORD_BOOST: 0.1,
   INTENT_BOOST: 0.15,
   CATEGORY_BOOST: 0.08,
-  PROCEDURAL_BOOST: 0.2
+  PROCEDURAL_BOOST: 0.2,
+  MAX_HISTORY_LENGTH: 5  // New: Limit conversation history to last 5 exchanges
+};
+
+// Contact information hardcoded as a constant
+const CONTACT_INFO = {
+  mainPhone: '+44 (0)121 765 4166',
+  instructions: 'When calling our main line, please select the appropriate option from the menu:',
+  options: [
+    { dial: 1, description: 'UK Transport / Customer Support', emails: ['sales@jeavonseurotir.co.uk', 'customersupport@jeavonseurotir.co.uk'] },
+    { dial: 2, description: 'Customs / Shipping', emails: ['customs@jeavonseurotir.co.uk', 'shipping@jeavonseurotir.co.uk'] },
+    { dial: 3, description: 'EU Services', emails: ['european@jeavonseurotir.co.uk'] },
+    { dial: 4, description: 'Sales', emails: ['sales@jeavonseurotir.co.uk'] },
+    { dial: 5, description: 'Warehousing', emails: ['warehousing@jeavonseurotir.co.uk'] },
+    { dial: 6, description: 'Accounts', emails: ['accounts@jeavonseurotir.co.uk'] }
+  ]
 };
 
 // Initialize OpenAI client
@@ -205,6 +220,26 @@ class KnowledgeBase {
     return null;
   }
 
+  // New: Detect theme for contact routing
+  detectTheme(query) {
+    const lowerQuery = query.toLowerCase();
+    const themePatterns = {
+      'uk_transport': /\b(uk|transport|customer support|sales)\b/i,
+      'customs_shipping': /\b(customs|shipping|freight|delivery|import|export)\b/i,
+      'eu': /\b(eu|european)\b/i,
+      'sales': /\b(sales|quote|pricing)\b/i,
+      'warehousing': /\b(warehouse|storage|warehousing)\b/i,
+      'accounts': /\b(accounts|billing|invoice|payment|finance)\b/i
+    };
+
+    for (const [theme, pattern] of Object.entries(themePatterns)) {
+      if (pattern.test(lowerQuery)) {
+        return theme;
+      }
+    }
+    return 'general';
+  }
+
   isProceduralQuery(query) {
     const lowerQuery = query.toLowerCase();
     return /\b(how to|steps|process|procedure|guide|instructions|set up|arrange|organize)\b/i.test(lowerQuery);
@@ -346,6 +381,21 @@ class PatternMatcher {
     ];
     return contactPatterns.some(pattern => pattern.test(message));
   }
+
+  // New: Detect if message is following up on a contact suggestion
+  static isContactFollowup(message, history) {
+    if (!history || history.length === 0) return false;
+    const lastBotMessage = history[history.length - 1]?.bot || '';
+    const contactSuggestionPatterns = [
+      /contact.*team/i,
+      /reach out/i,
+      /get in touch/i,
+      /call us/i,
+      /email us/i
+    ];
+    return contactSuggestionPatterns.some(pattern => pattern.test(lastBotMessage)) &&
+           PatternMatcher.isContactQuery(message);
+  }
 }
 
 // Enhanced ContextBuilder for procedural questions
@@ -443,9 +493,38 @@ class ContextBuilder {
   }
 }
 
-// Enhanced system prompt for procedural questions
+// Enhanced system prompt for procedural questions and contact handling
 class SystemPromptBuilder {
-  static buildSystemPrompt(context, isProcedural = false) {
+  static buildSystemPrompt(context, isProcedural = false, history = [], detectedTheme = 'general', isContactFollowup = false) {
+    // Build history summary for context
+    let historySummary = '';
+    if (history.length > 0) {
+      historySummary = '\n\n# CONVERSATION HISTORY (Last ' + Math.min(history.length, CONFIG.MAX_HISTORY_LENGTH) + ' exchanges):\n';
+      history.slice(-CONFIG.MAX_HISTORY_LENGTH).forEach((exchange, index) => {
+        historySummary += `User ${index + 1}: ${exchange.user}\nBot ${index + 1}: ${exchange.bot}\n`;
+      });
+    }
+
+    // Format contact info based on theme
+    let relevantContacts = '';
+    if (detectedTheme !== 'general' || isContactFollowup) {
+      const themeToOption = {
+        'uk_transport': 1,
+        'customs_shipping': 2,
+        'eu': 3,
+        'sales': 4,
+        'warehousing': 5,
+        'accounts': 6
+      };
+      const optionDial = themeToOption[detectedTheme] || 0;
+      if (optionDial > 0) {
+        const option = CONTACT_INFO.options.find(opt => opt.dial === optionDial);
+        if (option) {
+          relevantContacts = `\n\n# RELEVANT CONTACT FOR ${detectedTheme.toUpperCase()}:\n- Dial ${option.dial} on ${CONTACT_INFO.mainPhone} for ${option.description}.\n- Emails: ${option.emails.join(', ')}.`;
+        }
+      }
+    }
+
     const basePrompt = `
 # ROLE & PERSONA
 You are an official AI assistant for Jeavons Eurotir Ltd., a family-owned logistics company. You speak on behalf of the company. You are helpful, professional, and proud of the company's 46 years of experience.
@@ -453,14 +532,23 @@ You are an official AI assistant for Jeavons Eurotir Ltd., a family-owned logist
 # CORE DIRECTIVES
 1.  **FIRST PERSON:** Always refer to the company as "we", "us", or "our". NEVER use third-person like "Jeavons Eurotir offers..." or "They offer...". Example: "We offer global shipping services" NOT "Jeavons Eurotir offers global shipping."
 2.  **STRICT CONTEXT USE:** Your knowledge is STRICTLY LIMITED to the context provided below. If the answer is not found in the context, you MUST say so. DO NOT HALLUCINATE or make up information.
-3.  **NO KNOWLEDGE RESPONSE:** If you lack information, say: "I don't have that specific information on hand," or "I'm not sure about that detail," and guide them to contact the team.
-4.  **FORMATTING:** Respond in clear, plain text. Use natural paragraphs. Do NOT use markdown, bullet points (*, -), or numbered lists.
+3.  **NO KNOWLEDGE RESPONSE:** If you lack information, say: "I don't have that specific information on hand," or "I'm not sure about that detail," and IMMEDIATELY guide them to contact the team using the contact details below. ALWAYS provide contact info when unsure or when the query relates to contact/follow-up.
+4.  **CONTACT HANDLING:** 
+   - Provide contact details when requested or needed, especially for themes like UK transport, customs/shipping, EU, sales, warehousing, or accounts. Detect the general theme of the query (e.g., shipping-related = customs/shipping contacts).
+   - If the conversation history shows a previous suggestion to contact us and this is a follow-up (e.g., "How can I do that?"), ALWAYS provide the full relevant contact details.
+   - Use the MAIN PHONE and relevant option from below. Include emails where applicable. Format naturally in your response.
+   - Main Phone: ${CONTACT_INFO.mainPhone}${relevantContacts || `
+   ${CONTACT_INFO.instructions}
+   ${CONTACT_INFO.options.map(opt => `- Dial ${opt.dial}: ${opt.description} (${opt.emails ? 'Emails: ' + opt.emails.join(', ') : ''})`).join('\n   ')}`}
+5.  **FORMATTING:** Respond in clear, plain text. Use natural paragraphs. Do NOT use markdown, bullet points (*, -), or numbered lists.
 
 # CONTEXT TO USE:
 ${context}
 
+${historySummary}
+
 # FINAL INSTRUCTION
-Answer the user's question based SOLELY on the context above. Speak as a representative of Jeavons Eurotir.
+Answer the user's question based SOLELY on the context above. Speak as a representative of Jeavons Eurotir. If relevant, weave in contact guidance naturally.
     `.trim();
 
     if (isProcedural) {
@@ -471,6 +559,7 @@ Answer the user's question based SOLELY on the context above. Speak as a represe
 - Use transitional words like "First", "Next", "Then", "Finally" to create a clear flow
 - If steps are mentioned across different context items, combine them logically
 - Maintain the first-person perspective throughout the process description
+- At the end of procedural responses, if more details might be needed, suggest contacting the relevant team with specifics from the contact info.
       `.trim();
     }
 
@@ -483,7 +572,7 @@ class ChatBot {
   constructor() {
     this.knowledgeBase = new KnowledgeBase();
     this.cache = new QueryCache();
-    this.conversationHistory = new Map();
+    this.conversationHistory = new Map();  // sessionId -> array of {user, bot}
     this.knowledgeBase.load();
   }
 
@@ -512,15 +601,29 @@ class ChatBot {
   }
 
   async processQuery(question, sessionId = 'default') {
+    // Manage conversation history
+    if (!this.conversationHistory.has(sessionId)) {
+      this.conversationHistory.set(sessionId, []);
+    }
+    const history = this.conversationHistory.get(sessionId);
+
     if (PatternMatcher.isGreeting(question)) {
-      return {
+      const greetingResponse = {
         answer: ResponseGenerator.generateGreeting(question),
         matches: [],
         context_used: false,
         detected_intent: null,
+        detected_theme: null,
         is_greeting: true,
+        is_contact_followup: false,
         related_content: []
       };
+      // Add to history
+      history.push({ user: question, bot: greetingResponse.answer });
+      if (history.length > CONFIG.MAX_HISTORY_LENGTH * 2) {  // *2 since each exchange has user+bot
+        history.splice(0, history.length - CONFIG.MAX_HISTORY_LENGTH * 2);
+      }
+      return greetingResponse;
     }
 
     const cacheKey = question.toLowerCase().trim();
@@ -536,41 +639,53 @@ class ChatBot {
 
       const matches = this.knowledgeBase.findTopMatches(queryEmbedding, question);
       const isProcedural = PatternMatcher.isProcedural(question);
+      const detectedTheme = this.knowledgeBase.detectTheme(question);
+      const isContactFollowup = PatternMatcher.isContactFollowup(question, history);
       
       const { contextText, relatedContent } = ContextBuilder.build(matches, question, this.knowledgeBase);
 
-      if (contextText.length === 0) {
-        const noContextResponse = {
-          answer: "I don't have specific information about that on hand. For detailed or specialized inquiries, please contact our team directly at +44 (0)121 765 4166. They'll be happy to assist you.",
-          matches: [],
-          context_used: false,
-          detected_intent: this.knowledgeBase.detectIntent(question),
-          is_greeting: false,
-          related_content: []
-        };
-        return noContextResponse;
-      }
+      let answer;
+      let contextUsed = contextText.length > 0;
 
-      const systemPrompt = SystemPromptBuilder.buildSystemPrompt(contextText, isProcedural);
-      
-      const chatResponse = await openai.chat.completions.create({
-        model: CONFIG.CHAT_MODEL,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: question }
-        ],
-        temperature: CONFIG.TEMPERATURE,
-        max_tokens: CONFIG.MAX_TOKENS
-      });
+      if (contextText.length === 0 || isContactFollowup) {
+        // For no context or contact follow-up, generate a response focused on contacts
+        const noContextPrompt = SystemPromptBuilder.buildSystemPrompt('', false, history, detectedTheme, isContactFollowup || true);
+        const chatResponse = await openai.chat.completions.create({
+          model: CONFIG.CHAT_MODEL,
+          messages: [
+            { role: 'system', content: noContextPrompt },
+            { role: 'user', content: question }
+          ],
+          temperature: CONFIG.TEMPERATURE,
+          max_tokens: CONFIG.MAX_TOKENS
+        });
 
-      let answer = chatResponse.choices?.[0]?.message?.content ||
-        "I apologize, but I couldn't generate a response at this time.";
+        answer = chatResponse.choices?.[0]?.message?.content ||
+          "I apologize, but I couldn't generate a response at this time. Please contact us at +44 (0)121 765 4166 for assistance.";
 
-      answer = this.cleanupFormattingArtifacts(answer);
+        contextUsed = false;  // Explicitly no KB context
+      } else {
+        const systemPrompt = SystemPromptBuilder.buildSystemPrompt(contextText, isProcedural, history, detectedTheme, isContactFollowup);
+        
+        const chatResponse = await openai.chat.completions.create({
+          model: CONFIG.CHAT_MODEL,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: question }
+          ],
+          temperature: CONFIG.TEMPERATURE,
+          max_tokens: CONFIG.MAX_TOKENS
+        });
 
-      // NEW: Add closing phrase if appropriate
-      if (!PatternMatcher.isGreeting(question) && !this.answerHasClosingPhrase(answer)) {
-        answer = this.addClosingPhrase(answer, matches.length > 0);
+        answer = chatResponse.choices?.[0]?.message?.content ||
+          "I apologize, but I couldn't generate a response at this time.";
+
+        answer = this.cleanupFormattingArtifacts(answer);
+
+        // NEW: Add closing phrase if appropriate
+        if (!PatternMatcher.isGreeting(question) && !this.answerHasClosingPhrase(answer)) {
+          answer = this.addClosingPhrase(answer, matches.length > 0);
+        }
       }
 
       const detectedIntent = this.knowledgeBase.detectIntent(question);
@@ -587,10 +702,12 @@ class ChatBot {
           sub_category: m.item.sub_category,
           metadata: m.item.metadata
         })),
-        context_used: contextText.length > 0,
+        context_used: contextUsed,
         detected_intent: detectedIntent,
+        detected_theme: detectedTheme,
         is_greeting: false,
         is_procedural: isProcedural,
+        is_contact_followup: isContactFollowup,
         related_content: relatedContent.map(item => ({
           Q: item.Q || item.question,
           A: item.A || item.answer,
@@ -599,7 +716,13 @@ class ChatBot {
         }))
       };
 
-      if (matches.length > 0) {
+      // Add current exchange to history
+      history.push({ user: question, bot: answer });
+      if (history.length > CONFIG.MAX_HISTORY_LENGTH * 2) {
+        history.splice(0, history.length - CONFIG.MAX_HISTORY_LENGTH * 2);
+      }
+
+      if (matches.length > 0 && !isContactFollowup) {
         this.cache.set(cacheKey, response);
       }
 
@@ -615,6 +738,12 @@ class ChatBot {
         errorMessage = "I'm temporarily unavailable due to service limits. Please contact us directly at +44 (0)121 765 4166.";
       } else if (error.code === 'rate_limit_exceeded') {
         errorMessage = "I'm receiving too many requests right now. Please try again in a moment.";
+      }
+      
+      // Add to history even on error
+      history.push({ user: question, bot: errorMessage });
+      if (history.length > CONFIG.MAX_HISTORY_LENGTH * 2) {
+        history.splice(0, history.length - CONFIG.MAX_HISTORY_LENGTH * 2);
       }
       
       throw new Error(errorMessage);
@@ -640,6 +769,7 @@ class ChatBot {
       intentIndexSize: this.knowledgeBase.intentIndex.size,
       categoryIndexSize: this.knowledgeBase.categoryIndex.size,
       cacheSize: this.cache.size(),
+      activeSessions: this.conversationHistory.size,
       isKBLoaded: this.knowledgeBase.isLoaded
     };
   }
@@ -712,36 +842,9 @@ class ResponseGenerator {
   }
 }
 
-// ContactHandler
+// ContactHandler (simplified, as logic is now in prompt)
 class ContactHandler {
-  static shouldIncludeContact(question, matches, answer) {
-    if (PatternMatcher.isGreeting(question)) return false;
-    return PatternMatcher.isContactQuery(question) ||
-      matches.length === 0 ||
-      matches[0]?.score < 0.3 ||
-      /don'?t know|unsure|not sure|no information|sorry|apologize/i.test(answer);
-  }
-
-  static formatContactInfo(question, matches, answer) {
-    const contactMatch = matches.find(m =>
-      m.item.metadata?.intent === 'contact_info' ||
-      m.item.metadata?.keywords?.includes('contact') ||
-      /contact|phone|email/i.test(m.item.Q || m.item.question || '')
-    );
-
-    if (contactMatch) {
-      const contactAnswer = contactMatch.item.A || contactMatch.item.answer || '';
-      if (!answer.includes(contactAnswer)) {
-        return `${answer}\n\n${contactAnswer}`;
-      }
-    }
-
-    if (!answer.includes('+44') && !answer.includes('sales@jeavonseurotir.co.uk')) {
-      return `${answer} For more information, please contact us at +44 (0)121 765 4166.`;
-    }
-
-    return answer;
-  }
+  // Removed, as contact logic is now handled in SystemPromptBuilder
 }
 
 // Express router setup
@@ -778,4 +881,3 @@ router.post(
 );
 
 module.exports = router;
-
