@@ -5,14 +5,13 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.set('trust proxy', true);
-
 // --- SECURITY UPDATE: Configure CORS Middleware ---
 // Define the list of allowed websites (origins) that can talk to this backend
 const allowedOrigins = [
-  'https://www.jeavonseurotir.co.uk/', // LIVE SITE URL
-  'https://jeavonsdev.webchoice-test.co.uk/', // TEST SITE URL
-  
+  'https://www.jeavonseurotir.co.uk/', // REPLACE WITH YOUR LIVE SITE URL
+  'https://jeavonsdev.webchoice-test.co.uk/', // YOUR TEST SITE URL
+  // For local development
+];
 
 const corsOptions = {
   origin: function (origin, callback) {
@@ -28,10 +27,10 @@ const corsOptions = {
   }
 };
 
-// Use the secure CORS configuration
-app.use(cors(corsOptions));
-// --- End of Security Update ---
+app.set('trust proxy', true);
 
+// Middleware
+app.use(cors(corsOptions)); // Use the secure CORS configuration
 app.use(express.json());
 
 // Import your API routes from root (not from api folder)
