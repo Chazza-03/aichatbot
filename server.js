@@ -5,14 +5,34 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Set your trusted front-end origin from environment variables
+// This is the domain of your front-end application (e.g., https://your-frontend-app.com)
+// In development, this might be 'http://localhost:3000'
+const allowedOrigins = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : ['https://www.jeavonseurotir.co.uk/','https://jeavonsdev.webchoice-test.co.uk/'];
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Check if the incoming request origin is in the allowed list
+    // Or if the origin is undefined (for same-origin requests or tools like Postman)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE'], // Specify allowed methods
+  allowedHeaders: ['Content-Type', 'Authorization'], // Specify allowed headers
+  optionsSuccessStatus: 200,
+};
+
 app.set('trust proxy', true);
 
-// Middleware
-app.use(cors());
+// Use the cors middleware with your security-focused options
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Import your API routes from root (not from api folder)
-const chatRoutes = require('./chat'); // Changed from './api/chat'
+const chatRoutes = require('./chat');
 
 // Use your API routes
 app.use('/api/chat', chatRoutes);
