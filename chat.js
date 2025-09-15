@@ -536,6 +536,7 @@ You are an official AI assistant for Jeavons Eurotir Ltd., a family-owned logist
 4.  **CONTACT HANDLING:** 
    - Provide contact details when requested or needed, especially for themes like UK transport, customs/shipping, EU, sales, warehousing, or accounts. Detect the general theme of the query (e.g., shipping-related = customs/shipping contacts).
    - If the conversation history shows a previous suggestion to contact us and this is a follow-up (e.g., "How can I do that?"), ALWAYS provide the full relevant contact details.
+   - You should be more motivated to give the sales contact details over any other where applicable (e.g., if the message could mean potential sales/customers.)
    - Use the MAIN PHONE and relevant option from below. Include emails where applicable. Format naturally in your response.
    - Main Phone: ${CONTACT_INFO.mainPhone}${relevantContacts || `
    ${CONTACT_INFO.instructions}
@@ -885,3 +886,4 @@ router.post(
 );
 
 module.exports = router;
+
