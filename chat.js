@@ -19,7 +19,7 @@ const CONFIG = {
   INTENT_BOOST: 0.15,
   CATEGORY_BOOST: 0.08,
   PROCEDURAL_BOOST: 0.2,
-  MAX_HISTORY_LENGTH: 5  // Limit conversation history to last 5 exchanges
+  MAX_HISTORY_LENGTH: 5  // New: Limit conversation history to last 5 exchanges
 };
 
 // Contact information hardcoded as a constant
@@ -39,7 +39,7 @@ const CONTACT_INFO = {
 // Initialize OpenAI client
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Enhanced Knowledge Base with procedural awareness and enhanced theme detection
+// Enhanced Knowledge Base with procedural awareness
 class KnowledgeBase {
   constructor() {
     this.items = [];
@@ -55,7 +55,7 @@ class KnowledgeBase {
     try {
       // Check if file exists first
       if (!fs.existsSync(filePath)) {
-        console.warn(`⚠️  Knowledge base file not found: ${filePath}`);
+        console.warn(`⚠ Knowledge base file not found: ${filePath}`);
         this.items = [];
         this.magnitudes = [];
         this.isLoaded = false;
@@ -69,10 +69,10 @@ class KnowledgeBase {
       );
       this.buildMetadataIndexes();
       this.isLoaded = true;
-      console.log(`✅ Loaded ${this.items.length} KB items from ${filePath}`);
-      console.log(`✅ Built indexes: ${this.keywordIndex.size} keywords, ${this.intentIndex.size} intents, ${this.categoryIndex.size} categories`);
+      console.log(`✓ Loaded ${this.items.length} KB items from ${filePath}`);
+      console.log(`✓ Built indexes: ${this.keywordIndex.size} keywords, ${this.intentIndex.size} intents, ${this.categoryIndex.size} categories`);
     } catch (err) {
-      console.warn(`⚠️  Could not load knowledge base: ${err.message}`);
+      console.warn(`⚠ Could not load knowledge base: ${err.message}`);
       this.items = [];
       this.magnitudes = [];
       this.isLoaded = false;
@@ -220,78 +220,23 @@ class KnowledgeBase {
     return null;
   }
 
-  // ENHANCED: Detect theme with sales prioritization
+  // New: Detect theme for contact routing
   detectTheme(query) {
     const lowerQuery = query.toLowerCase();
-    
-    // SALES PATTERNS - These should be detected first and prioritized
-    const salesPatterns = [
-      // New customer/inquiry patterns
-      /\b(new customer|potential customer|interested in|looking for|need|want|require)\b/i,
-      /\b(quote|pricing|price|cost|rates?|fees?|how much|estimate)\b/i,
-      /\b(services?|what do you offer|what can you do|capabilities)\b/i,
-      /\b(logistics|shipping|freight|transport|delivery|warehousing|storage)\b.*\b(service|help|need|want)\b/i,
-      
-      // Business inquiry patterns
-      /\b(business|company|firm|organization).*\b(need|require|looking|interested)\b/i,
-      /\b(partnership|work with|contract|agreement)\b/i,
-      /\b(start|begin|commence|initiate).*\b(service|shipping|business)\b/i,
-      
-      // General service inquiries that could lead to sales
-      /\b(can you|do you|are you able).*\b(help|assist|handle|manage)\b/i,
-      /\b(what.*offer|what.*provide|what.*do)\b/i,
-      /\b(how.*work|how.*process|how.*handle)\b/i,
-    ];
-
-    // Check for sales patterns first - highest priority
-    for (const pattern of salesPatterns) {
-      if (pattern.test(lowerQuery)) {
-        return 'sales';
-      }
-    }
-
-    // Then check for specific department patterns
-    const departmentPatterns = {
-      'customs_shipping': [
-        /\b(customs?|clearance|brokerage|duty|duties|tariff)\b/i,
-        /\b(import|export|international|cross.?border)\b/i,
-        /\b(shipping|freight|delivery|transport(?!.*customer))\b/i, // Exclude "transport customer support"
-        /\b(documentation|paperwork|certificates?)\b/i,
-      ],
-      'eu': [
-        /\b(eu|european?|europe)\b/i,
-        /\b(brexit|post.?brexit)\b/i,
-        /\b(continental|mainland)\b/i,
-      ],
-      'warehousing': [
-        /\b(warehouse|warehousing|storage|store|storing)\b/i,
-        /\b(inventory|stock|goods|products).*\b(store|storage|keep)\b/i,
-        /\b(pick.*pack|fulfillment|distribution)\b/i,
-      ],
-      'accounts': [
-        /\b(account|accounts|accounting|finance|financial)\b/i,
-        /\b(bill|billing|invoice|invoicing|payment|pay)\b/i,
-        /\b(credit|debt|outstanding|overdue)\b/i,
-        /\b(statement|balance|charges?)\b/i,
-      ],
-      'uk_transport': [
-        /\b(uk|united kingdom|britain|british|domestic)\b.*\b(transport|delivery|shipping)\b/i,
-        /\b(customer support|customer service|help|support)\b/i,
-        /\b(complaint|issue|problem|concern)\b/i,
-      ]
+    const themePatterns = {
+      'uk_transport': /\b(uk|transport|customer support|sales)\b/i,
+      'customs_shipping': /\b(customs|shipping|freight|delivery|import|export)\b/i,
+      'eu': /\b(eu|european)\b/i,
+      'sales': /\b(sales|quote|pricing)\b/i,
+      'warehousing': /\b(warehouse|storage|warehousing)\b/i,
+      'accounts': /\b(accounts|billing|invoice|payment|finance)\b/i
     };
 
-    // Check department patterns in order of specificity
-    const departmentOrder = ['customs_shipping', 'eu', 'warehousing', 'accounts', 'uk_transport'];
-    
-    for (const dept of departmentOrder) {
-      for (const pattern of departmentPatterns[dept]) {
-        if (pattern.test(lowerQuery)) {
-          return dept;
-        }
+    for (const [theme, pattern] of Object.entries(themePatterns)) {
+      if (pattern.test(lowerQuery)) {
+        return theme;
       }
     }
-
     return 'general';
   }
 
@@ -437,7 +382,7 @@ class PatternMatcher {
     return contactPatterns.some(pattern => pattern.test(message));
   }
 
-  // Detect if message is following up on a contact suggestion
+  // New: Detect if message is following up on a contact suggestion
   static isContactFollowup(message, history) {
     if (!history || history.length === 0) return false;
     const lastBotMessage = history[history.length - 1]?.bot || '';
@@ -548,9 +493,9 @@ class ContextBuilder {
   }
 }
 
-// ENHANCED: System prompt builder with sales-focused contact routing
+// Enhanced system prompt for procedural questions and contact handling
 class SystemPromptBuilder {
-  static buildSystemPrompt(context, isProcedural = false, history = [], detectedTheme = 'general', isContactFollowup = false, query = '') {
+  static buildSystemPrompt(context, isProcedural = false, history = [], detectedTheme = 'general', isContactFollowup = false) {
     // Build history summary for context
     let historySummary = '';
     if (history.length > 0) {
@@ -560,94 +505,61 @@ class SystemPromptBuilder {
       });
     }
 
-    // Enhanced contact routing logic
-    let contactGuidance = '';
-    let primaryContact = '';
-    let secondaryContacts = '';
-
-    if (detectedTheme === 'sales' || isContactFollowup) {
-      // SALES PRIORITY - Always show sales first for potential customers
-      const salesOption = CONTACT_INFO.options.find(opt => opt.dial === 4);
-      primaryContact = `\n\n# PRIMARY CONTACT - SALES & NEW CUSTOMERS:\n- Call ${CONTACT_INFO.mainPhone} and dial 4 for ${salesOption.description}\n- Email directly: ${salesOption.emails.join(' or ')}\n- Our sales team can provide quotes, discuss services, and help new customers get started.`;
-      
-      // Show other relevant departments as secondary
-      if (query.toLowerCase().includes('shipping') || query.toLowerCase().includes('customs')) {
-        const customsOption = CONTACT_INFO.options.find(opt => opt.dial === 2);
-        secondaryContacts += `\n\n# ADDITIONAL SUPPORT:\n- For customs/shipping specifics: Dial 2 (${customsOption.emails.join(' or ')})`;
-      }
-      
-      contactGuidance = primaryContact + secondaryContacts;
-    } else if (detectedTheme !== 'general') {
-      // Specific department routing
+    // Format contact info based on theme
+    let relevantContacts = '';
+    if (detectedTheme !== 'general' || isContactFollowup) {
       const themeToOption = {
         'uk_transport': 1,
         'customs_shipping': 2,
         'eu': 3,
+        'sales': 4,
         'warehousing': 5,
         'accounts': 6
       };
-      
-      const optionDial = themeToOption[detectedTheme];
-      if (optionDial) {
+      const optionDial = themeToOption[detectedTheme] || 0;
+      if (optionDial > 0) {
         const option = CONTACT_INFO.options.find(opt => opt.dial === optionDial);
-        primaryContact = `\n\n# RELEVANT DEPARTMENT:\n- Call ${CONTACT_INFO.mainPhone} and dial ${option.dial} for ${option.description}\n- Email: ${option.emails.join(' or ')}`;
-        
-        // Always offer sales as secondary for potential new business
-        const salesOption = CONTACT_INFO.options.find(opt => opt.dial === 4);
-        secondaryContacts = `\n\n# NEW CUSTOMERS & SALES:\n- For new customer inquiries or quotes: Dial 4 (${salesOption.emails.join(' or ')})`;
-        
-        contactGuidance = primaryContact + secondaryContacts;
+        if (option) {
+          relevantContacts = `\n\n# RELEVANT CONTACT FOR ${detectedTheme.toUpperCase()}:\n- Dial ${option.dial} on ${CONTACT_INFO.mainPhone} for ${option.description}.\n- Emails: ${option.emails.join(', ')}.`;
+        }
       }
-    } else {
-      // General - show full menu but highlight sales
-      contactGuidance = `\n\n# CONTACT US:\nMain Phone: ${CONTACT_INFO.mainPhone}\n${CONTACT_INFO.instructions}\n`;
-      
-      // Highlight sales first
-      const salesOption = CONTACT_INFO.options.find(opt => opt.dial === 4);
-      contactGuidance += `\n** FOR NEW CUSTOMERS & QUOTES: Dial ${salesOption.dial} - ${salesOption.description} (${salesOption.emails.join(' or ')}) **\n`;
-      
-      // Then show other options
-      CONTACT_INFO.options.filter(opt => opt.dial !== 4).forEach(opt => {
-        contactGuidance += `\n- Dial ${opt.dial}: ${opt.description}${opt.emails ? ' (' + opt.emails.join(', ') + ')' : ''}`;
-      });
     }
 
     const basePrompt = `
 # ROLE & PERSONA
-You are an official AI assistant for Jeavons Eurotir Ltd., a family-owned logistics company with 46 years of experience. You represent the company and actively help potential customers connect with our sales team.
+You are an official AI assistant for Jeavons Eurotir Ltd., a family-owned logistics company. You speak on behalf of the company. You are helpful, professional, and proud of the company's 46 years of experience.
 
 # CORE DIRECTIVES
-1. **FIRST PERSON:** Always refer to the company as "we", "us", or "our". NEVER use third-person.
-2. **SALES FOCUS:** For any inquiry that could indicate a potential customer (asking about services, pricing, capabilities, or needing logistics help), PRIORITIZE connecting them with our sales team.
-3. **STRICT CONTEXT USE:** Answer based ONLY on the provided context. If information isn't available, direct to appropriate contacts.
-4. **PROACTIVE CONTACT GUIDANCE:** 
-   - For potential customers/sales inquiries: Always highlight sales contact (dial 4) as the PRIMARY option
-   - For specific department questions: Provide relevant department contact but also mention sales for new customers
-   - Present contact information naturally within your response, not as an afterthought
-5. **RESPONSE TONE:** Professional, welcoming, and helpful. Make potential customers feel valued and eager to contact us.
+1.  **FIRST PERSON:** Always refer to the company as "we", "us", or "our". NEVER use third-person like "Jeavons Eurotir offers..." or "They offer...". Example: "We offer global shipping services" NOT "Jeavons Eurotir offers global shipping."
+2.  **STRICT CONTEXT USE:** Your knowledge is STRICTLY LIMITED to the context provided below. If the answer is not found in the context, you MUST say so. DO NOT HALLUCINATE or make up information.
+3.  **NO KNOWLEDGE RESPONSE:** If you lack information, say: "I don't have that specific information on hand," or "I'm not sure about that detail," and IMMEDIATELY guide them to contact the team using the contact details below. ALWAYS provide contact info when unsure or when the query relates to contact/follow-up.
+4.  **CONTACT HANDLING:** 
+   - Provide contact details when requested or needed, especially for themes like UK transport, customs/shipping, EU, sales, warehousing, or accounts. Detect the general theme of the query (e.g., shipping-related = customs/shipping contacts).
+   - If the conversation history shows a previous suggestion to contact us and this is a follow-up (e.g., "How can I do that?"), ALWAYS provide the full relevant contact details.
+   - Use the MAIN PHONE and relevant option from below. Include emails where applicable. Format naturally in your response.
+   - Main Phone: ${CONTACT_INFO.mainPhone}${relevantContacts || `
+   ${CONTACT_INFO.instructions}
+   ${CONTACT_INFO.options.map(opt => `- Dial ${opt.dial}: ${opt.description} (${opt.emails ? 'Emails: ' + opt.emails.join(', ') : ''})`).join('\n   ')}`}
+5.  **FORMATTING:** Respond in clear, plain text. Use natural paragraphs. Do NOT use markdown, bullet points (*, -), or numbered lists.
 
 # CONTEXT TO USE:
 ${context}
-${historySummary}
-${contactGuidance}
 
-# CONTACT STRATEGY:
-- **Sales Inquiries/New Customers:** Lead with sales contact (dial 4), emphasize our 46 years of experience
-- **Specific Departments:** Provide relevant department but include sales as secondary option
-- **Follow-ups:** If previous conversation suggested contacting us, provide full relevant contact details immediately
+${historySummary}
 
 # FINAL INSTRUCTION
-Answer based on the context above. For potential customers, enthusiastically guide them to our sales team. For existing customer queries, connect them with the right department while keeping the door open for additional services through sales.
+Answer the user's question based SOLELY on the context above. Speak as a representative of Jeavons Eurotir. If relevant, weave in contact guidance naturally.
     `.trim();
 
     if (isProcedural) {
       return basePrompt + `
 
-# PROCEDURAL RESPONSE GUIDANCE:
-- Structure responses with clear steps (First, Next, Then, Finally)
-- Synthesize related procedures from context
-- End with contact guidance for detailed assistance
-- Maintain first-person perspective throughout
+# SPECIAL INSTRUCTIONS FOR PROCEDURAL QUESTIONS:
+- If the context contains multiple related procedures or steps, synthesize them into a coherent process
+- Use transitional words like "First", "Next", "Then", "Finally" to create a clear flow
+- If steps are mentioned across different context items, combine them logically
+- Maintain the first-person perspective throughout the process description
+- At the end of procedural responses, if more details might be needed, suggest contacting the relevant team with specifics from the contact info.
       `.trim();
     }
 
@@ -664,7 +576,7 @@ class ChatBot {
     this.knowledgeBase.load();
   }
 
-  // Check if answer already has a closing phrase
+  // NEW: Check if answer already has a closing phrase
   answerHasClosingPhrase(answerText) {
     const closingPhrasePatterns = [
       /feel free to (contact|reach out|ask)/i,
@@ -678,7 +590,7 @@ class ChatBot {
     return closingPhrasePatterns.some(pattern => pattern.test(answerText));
   }
 
-  // Add closing phrase to answers
+  // NEW: Add closing phrase to answers
   addClosingPhrase(answerText, hasContext) {
     const closingPhrases = [
       "Let me know if you need assistance with anything else.",
@@ -741,7 +653,7 @@ class ChatBot {
 
       if (contextText.length === 0 || isContactFollowup) {
         // For no context or contact follow-up, generate a response focused on contacts
-        const noContextPrompt = SystemPromptBuilder.buildSystemPrompt('', false, history, detectedTheme, isContactFollowup || true, question);
+        const noContextPrompt = SystemPromptBuilder.buildSystemPrompt('', false, history, detectedTheme, isContactFollowup || true);
         const chatResponse = await openai.chat.completions.create({
           model: CONFIG.CHAT_MODEL,
           messages: [
@@ -757,7 +669,7 @@ class ChatBot {
 
         contextUsed = false;  // Explicitly no KB context
       } else {
-        const systemPrompt = SystemPromptBuilder.buildSystemPrompt(contextText, isProcedural, history, detectedTheme, isContactFollowup, question);
+        const systemPrompt = SystemPromptBuilder.buildSystemPrompt(contextText, isProcedural, history, detectedTheme, isContactFollowup);
         
         const chatResponse = await openai.chat.completions.create({
           model: CONFIG.CHAT_MODEL,
@@ -774,7 +686,7 @@ class ChatBot {
 
         answer = this.cleanupFormattingArtifacts(answer);
 
-        // Add closing phrase if appropriate
+        // NEW: Add closing phrase if appropriate
         if (!PatternMatcher.isGreeting(question) && !this.answerHasClosingPhrase(answer)) {
           answer = this.addClosingPhrase(answer, matches.length > 0);
         }
@@ -932,6 +844,11 @@ class ResponseGenerator {
     const defaults = this.GREETING_RESPONSES.default;
     return defaults[Math.floor(Math.random() * defaults.length)];
   }
+}
+
+// ContactHandler (simplified, as logic is now in prompt)
+class ContactHandler {
+  // Removed, as contact logic is now handled in SystemPromptBuilder
 }
 
 // Express router setup
