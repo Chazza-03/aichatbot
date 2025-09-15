@@ -6,6 +6,13 @@ const limiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: 30, // limit each IP
   message: { error: "Too many requests. Please slow down." },
+  // Use a custom key generator to handle proxy headers securely
+  keyGenerator: (req, res) => {
+    // Get the first IP from the X-Forwarded-For header
+    // This is the IP of the original client, even with trust proxy enabled
+    // If the header doesn't exist, fall back to the direct request IP
+    return req.headers['x-forwarded-for'] || req.ip;
+  }
 });
 
 // 2. Input validation & sanitization
