@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3001;
 // Set your trusted front-end origin from environment variables
 // This is the domain of your front-end application (e.g., https://your-frontend-app.com)
 // In development, this might be 'http://localhost:3000'
-const allowedOrigins = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : ['https://www.jeavonseurotir.co.uk/','https://jeavonsdev.webchoice-test.co.uk/'];
+const allowedOrigins = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : ['https://www.jeavonseurotir.co.uk','https://jeavonsdev.webchoice-test.co.uk'];
 
 const corsOptions = {
   origin: (origin, callback) => {
@@ -48,5 +48,6 @@ app.use(express.static(__dirname));
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
