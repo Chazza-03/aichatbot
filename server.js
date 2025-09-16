@@ -5,15 +5,14 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Set your trusted front-end origin from environment variables
-// This is the domain of your front-end application (e.g., https://your-frontend-app.com)
-// In development, this might be 'http://localhost:3000'
+// Set trusted front-end origin from environment variables
+
 const allowedOrigins = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : ['https://www.jeavonseurotir.co.uk','https://jeavonsdev.webchoice-test.co.uk'];
 
 const corsOptions = {
   origin: (origin, callback) => {
     // Check if the incoming request origin is in the allowed list
-    // Or if the origin is undefined (for same-origin requests or tools like Postman)
+    // Or if the origin is undefined 
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
@@ -48,6 +47,7 @@ app.use(express.static(__dirname));
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 
