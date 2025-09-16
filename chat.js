@@ -228,7 +228,7 @@ class KnowledgeBase {
       'customs_shipping': /\b(customs|shipping|freight|delivery|import|export)\b/i,
       'eu': /\b(eu|european)\b/i,
       'sales': /\b(sales|quote|pricing)\b/i,
-      'warehousing': /\b(warehouse|storage|warehousing)\b/i,
+      'warehousing': /\b(warehouse|storage|warehousing|store)\b/i,
       'accounts': /\b(accounts|billing|invoice|payment|finance)\b/i
     };
 
@@ -238,6 +238,35 @@ class KnowledgeBase {
       }
     }
     return 'general';
+  }
+
+  // New: Detect potential sale or possibility of future sale
+  detectSalesPotential(query, history = []) {
+    const lowerQuery = query.toLowerCase();
+
+    const commercialPatterns = [
+      /\b(would like to|want to|looking to|interested in|need|require|seeking|potential customer|possible sale|future sale)\b/i,
+      /\b(quote|estimate|cost|price|budget|affordable|rate|tariff|fee)\b/i,
+      /\b(buy|purchase|order|contract|deal|business with)\b/i
+    ];
+
+    const hasCommercial = commercialPatterns.some(p => p.test(lowerQuery));
+
+    if (hasCommercial) return true;
+
+    // For service inquiries that imply business
+    const serviceIntent = /\b(i would like to|can you help with|do you offer|how much to|can i get a quote for)\b/i;
+    if (serviceIntent.test(lowerQuery)) return true;
+
+    // History check for ongoing potential
+    if (history.length > 0) {
+      const recentHistory = history.slice(-2).map(ex => (ex.user + ' ' + ex.bot).toLowerCase()).join(' ');
+      if (commercialPatterns.some(p => p.test(recentHistory)) || serviceIntent.test(recentHistory)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   isProceduralQuery(query) {
@@ -495,7 +524,7 @@ class ContextBuilder {
 
 // Enhanced system prompt for procedural questions and contact handling
 class SystemPromptBuilder {
-  static buildSystemPrompt(context, isProcedural = false, history = [], detectedTheme = 'general', isContactFollowup = false) {
+  static buildSystemPrompt(context, isProcedural = false, history = [], detectedTheme = 'general', isContactFollowup = false, isPotentialSale = false) {
     // Build history summary for context
     let historySummary = '';
     if (history.length > 0) {
@@ -507,7 +536,11 @@ class SystemPromptBuilder {
 
     // Format contact info based on theme
     let relevantContacts = '';
-    if (detectedTheme !== 'general' || isContactFollowup) {
+    let primaryContact = '';
+    let salesInfo = '';
+    const shouldIncludeContacts = detectedTheme !== 'general' || isContactFollowup || isPotentialSale;
+
+    if (shouldIncludeContacts) {
       const themeToOption = {
         'uk_transport': 1,
         'customs_shipping': 2,
@@ -520,7 +553,25 @@ class SystemPromptBuilder {
       if (optionDial > 0) {
         const option = CONTACT_INFO.options.find(opt => opt.dial === optionDial);
         if (option) {
-          relevantContacts = `\n\n# RELEVANT CONTACT FOR ${detectedTheme.toUpperCase()}:\n- Dial ${option.dial} on ${CONTACT_INFO.mainPhone} for ${option.description}.\n- Emails: ${option.emails.join(', ')}.`;
+          primaryContact = `- Dial ${option.dial} on ${CONTACT_INFO.mainPhone} for ${option.description}.\n- Emails: ${option.emails.join(', ')}.`;
+        }
+      }
+
+      // Always include sales if potential sale, unless theme is already sales or accounts
+      if (isPotentialSale && detectedTheme !== 'sales' && detectedTheme !== 'accounts') {
+        const salesOption = CONTACT_INFO.options.find(opt => opt.dial === 4);
+        if (salesOption) {
+          salesInfo = `\n- For sales inquiries, quotes, or to discuss potential business, dial ${salesOption.dial} on ${CONTACT_INFO.mainPhone} or email ${salesOption.emails.join(', ')}.`;
+        }
+      }
+
+      if (primaryContact || salesInfo) {
+        relevantContacts = `\n\n# RELEVANT CONTACT${primaryContact && salesInfo ? 'S' : ''} FOR ${detectedTheme.toUpperCase()}${isPotentialSale ? ' (POTENTIAL SALE)' : ''}:\n${primaryContact}${salesInfo}`;
+      } else if (isPotentialSale) {
+        // Fallback to sales if general but potential
+        const salesOption = CONTACT_INFO.options.find(opt => opt.dial === 4);
+        if (salesOption) {
+          relevantContacts = `\n\n# RELEVANT CONTACT FOR POTENTIAL SALE:\n- Dial ${salesOption.dial} on ${CONTACT_INFO.mainPhone} for ${salesOption.description}.\n- Emails: ${salesOption.emails.join(', ')}.`;
         }
       }
     }
@@ -532,9 +583,9 @@ You are an official AI assistant for Jeavons Eurotir Ltd., a family-owned logist
 # CORE DIRECTIVES
 1.  **FIRST PERSON:** Always refer to the company as "we", "us", or "our". NEVER use third-person like "Jeavons Eurotir offers..." or "They offer...". Example: "We offer global shipping services" NOT "Jeavons Eurotir offers global shipping."
 2.  **STRICT CONTEXT USE:** Your knowledge is STRICTLY LIMITED to the context provided below. If the answer is not found in the context, you MUST say so. DO NOT HALLUCINATE or make up information.
-3.  **NO KNOWLEDGE RESPONSE:** If you lack information, say: "I don't have that specific information on hand," or "I'm not sure about that detail," and IMMEDIATELY guide them to contact the team using the contact details below. ALWAYS provide contact info when unsure or when the query relates to contact/follow-up.
+3.  **NO KNOWLEDGE RESPONSE:** If you lack information, say: "I don't have that specific information on hand," or "I'm not sure about that detail," and IMMEDIATELY guide them to contact the team using the contact details below. ALWAYS provide contact info when unsure or when the query relates to contact/follow-up. If the query mentions or implies a sale, possible sale, or future business opportunity, ALWAYS include the sales contact details in your response.
 4.  **CONTACT HANDLING:** 
-   - Provide contact details when requested or needed, especially for themes like UK transport, customs/shipping, EU, sales, warehousing, or accounts. Detect the general theme of the query (e.g., shipping-related = customs/shipping contacts).
+   - Provide contact details when requested or needed, especially for themes like UK transport, customs/shipping, EU, sales, warehousing, or accounts. Detect the general theme of the query (e.g., shipping-related = customs/shipping contacts). If there's any indication of a potential sale (e.g., interest in services, quotes, or business), include sales contacts.
    - If the conversation history shows a previous suggestion to contact us and this is a follow-up (e.g., "How can I do that?"), ALWAYS provide the full relevant contact details.
    - Use the MAIN PHONE and relevant option from below. Include emails where applicable. Format naturally in your response.
    - Main Phone: ${CONTACT_INFO.mainPhone}${relevantContacts || `
@@ -620,6 +671,7 @@ class ChatBot {
         detected_theme: null,
         is_greeting: true,
         is_contact_followup: false,
+        is_potential_sale: false,
         related_content: []
       };
       // Add to history
@@ -645,6 +697,7 @@ class ChatBot {
       const isProcedural = PatternMatcher.isProcedural(question);
       const detectedTheme = this.knowledgeBase.detectTheme(question);
       const isContactFollowup = PatternMatcher.isContactFollowup(question, history);
+      const isPotentialSale = this.knowledgeBase.detectSalesPotential(question, history);
       
       const { contextText, relatedContent } = ContextBuilder.build(matches, question, this.knowledgeBase);
 
@@ -653,7 +706,7 @@ class ChatBot {
 
       if (contextText.length === 0 || isContactFollowup) {
         // For no context or contact follow-up, generate a response focused on contacts
-        const noContextPrompt = SystemPromptBuilder.buildSystemPrompt('', false, history, detectedTheme, isContactFollowup || true);
+        const noContextPrompt = SystemPromptBuilder.buildSystemPrompt('', false, history, detectedTheme, isContactFollowup || true, isPotentialSale);
         const chatResponse = await openai.chat.completions.create({
           model: CONFIG.CHAT_MODEL,
           messages: [
@@ -669,7 +722,7 @@ class ChatBot {
 
         contextUsed = false;  // Explicitly no KB context
       } else {
-        const systemPrompt = SystemPromptBuilder.buildSystemPrompt(contextText, isProcedural, history, detectedTheme, isContactFollowup);
+        const systemPrompt = SystemPromptBuilder.buildSystemPrompt(contextText, isProcedural, history, detectedTheme, isContactFollowup, isPotentialSale);
         
         const chatResponse = await openai.chat.completions.create({
           model: CONFIG.CHAT_MODEL,
@@ -712,6 +765,7 @@ class ChatBot {
         is_greeting: false,
         is_procedural: isProcedural,
         is_contact_followup: isContactFollowup,
+        is_potential_sale: isPotentialSale,
         related_content: relatedContent.map(item => ({
           Q: item.Q || item.question,
           A: item.A || item.answer,
