@@ -1,18 +1,16 @@
 // securityMiddleware.js
 const rateLimit = require("express-rate-limit");
+const { ipKeyGenerator } = require("express-rate-limit");
 
 // 1. Rate limiting (30 requests/min per IP)
 const limiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: 30, // limit each IP
   message: { error: "Too many requests. Please slow down." },
-  // Use a custom key generator to handle proxy headers securely
-  keyGenerator: (req, res) => {
-    // Get the first IP from the X-Forwarded-For header
-    // This is the IP of the original client, even with trust proxy enabled
-    // If the header doesn't exist, fall back to the direct request IP
-    return req.headers['x-forwarded-for'] || req.ip;
-  }
+  // Use the ipKeyGenerator helper for a secure and correct key
+  // This automatically handles IPv4 and IPv6 addresses, including
+  // normalizing IPv6 addresses from a single client.
+  keyGenerator: ipKeyGenerator,
 });
 
 // 2. Input validation & sanitization
